@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# PHP / Laravel.
+#
+# WARNING: `php artisan serve` (the default here) is the single-threaded PHP dev server.
+# It is NOT comparable to the Nginx/PHP-FPM number in the root README. For a real
+# measurement, serve public/ through Nginx + PHP-FPM and point this at that port with
+# PHP_SERVER=external PORT=<nginx port>.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$HERE")"
+
+NAME="${NAME:-php}"
+PHP_SERVER="${PHP_SERVER:-artisan}"
+if [ "$PHP_SERVER" = "fpm" ] || [ "$PHP_SERVER" = "external" ]; then
+    STACK="${STACK:-Nginx/Php8.4/Laravel}"
+else
+    STACK="${STACK:-Php/Laravel (artisan dev server)}"
+fi
+PORT="${PORT:-8001}"
+BENCH_PATH="${BENCH_PATH:-/api/contents?page_size=20}"
+DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
+
+case "${1:-start}" in
+    meta)
+        printf 'NAME=%s\nSTACK=%s\nPORT=%s\nBENCH_PATH=%s\n' "$NAME" "$STACK" "$PORT" "$BENCH_PATH"
+        ;;
+    check)
+        if [ "$PHP_SERVER" = "external" ]; then exit 0; fi
+        if [ "$PHP_SERVER" = "fpm" ]; then
+            command -v php-fpm >/dev/null 2>&1 || { echo "php-fpm not found" >&2; exit 1; }
+            exit 0
+        fi
+        command -v php >/dev/null 2>&1 || { echo "php not found" >&2; exit 1; }
+        command -v composer >/dev/null 2>&1 || { echo "composer not found" >&2; exit 1; }
+        ;;
+    build)
+        if [ "$PHP_SERVER" = "external" ] || [ "$PHP_SERVER" = "fpm" ]; then exit 0; fi
+        cd "$HERE"
+        composer install --no-interaction --no-dev --optimize-autoloader
+        [ -f .env ] || cp .env.example .env
+        php artisan config:cache
+        ;;
+    start)
+        if [ "$PHP_SERVER" = "fpm" ]; then
+            # Nginx + PHP-FPM (what the Docker image uses).
+            # nginx.conf has a literal `listen`; point it at $PORT.
+            sed -i "s/^\( *listen \)[0-9]*/\1$PORT/" /etc/nginx/nginx.conf 2>/dev/null || true
+            php-fpm -D
+            exec nginx -g 'daemon off;'
+        fi
+        if [ "$PHP_SERVER" = "external" ]; then
+            echo "PHP_SERVER=external: expecting an already-running Nginx/PHP-FPM on port $PORT"
+            # Nothing to launch; hold the slot open so the harness can benchmark the external server.
+            exec sleep infinity
+        fi
+        cd "$HERE"
+        exec env DB_DATABASE="$DEMO_DB" php artisan serve --host=0.0.0.0 --port="$PORT"
+        ;;
+    *)
+        echo "usage: $0 {meta|check|build|start}" >&2; exit 2
+        ;;
+esac

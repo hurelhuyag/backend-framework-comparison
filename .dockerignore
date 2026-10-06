@@ -1,0 +1,12 @@
+**/target
+**/node_modules
+**/.next
+**/.venv
+**/vendor
+**/__pycache__
+.bench-logs
+.git
+.idea
+demo.sqlite-shm
+demo.sqlite-wal
+result.png

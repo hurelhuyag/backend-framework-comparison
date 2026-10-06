@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -61,8 +62,12 @@ func main() {
 	r.HandleFunc("/contents", GetContents).Methods("GET")
 	r.HandleFunc("/contents/{id:[0-9]+}", GetContent).Methods("GET")
 
-	log.Println("Server started at :8080")
-	log.Fatal(http.ListenAndServe(":8080", r))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Println("Server started at :" + port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
 }
 
 func GetCategories(w http.ResponseWriter, r *http.Request) {

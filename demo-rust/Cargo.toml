@@ -1,0 +1,15 @@
+[package]
+name = "demo-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+sea-orm = { version = "2.0", features = ["sqlx-sqlite", "runtime-tokio"] }
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
