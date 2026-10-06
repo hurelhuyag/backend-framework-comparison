@@ -4,9 +4,7 @@ WORKDIR /src
 COPY demo-hibernate-sqlite/pom.xml ./
 RUN mvn -B -q dependency:go-offline -DskipTests || true
 COPY demo-hibernate-sqlite/src ./src
-# jte-maven-plugin aborts if its template root is missing; this app only serves JSON, so an
-# empty template dir satisfies it without changing the project.
-RUN mkdir -p src/main/jte && mvn -B -DskipTests package
+RUN mvn -B -DskipTests package
 
 FROM eclipse-temurin:25-jre
 WORKDIR /app/demo-hibernate-sqlite

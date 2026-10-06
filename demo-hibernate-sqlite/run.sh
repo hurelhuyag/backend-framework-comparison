@@ -8,17 +8,24 @@ ROOT="$(dirname "$HERE")"
 NATIVE="${NATIVE:-0}"
 NAME="${NAME:-java}"
 if [ "$NATIVE" = "1" ]; then
-    STACK="${STACK:-GraalVM/Spring/Hibernate (native)}"
+    STACK="${STACK:-GraalVM25/Spring4.1/Hibernate7 (native)}"
 else
-    STACK="${STACK:-OpenJDK/Spring/Hibernate}"
+    STACK="${STACK:-OpenJDK25/Spring4.1/Hibernate7}"
 fi
 PORT="${PORT:-8080}"
 BENCH_PATH="${BENCH_PATH:-/contents?size=20}"
+LIST_PATH="${LIST_PATH-}"
+[ -n "$LIST_PATH" ] || LIST_PATH='/contents?size={size}'
+ITEM_PATH="${ITEM_PATH-}"
+[ -n "$ITEM_PATH" ] || ITEM_PATH='/contents/{id}'
+CATEGORIES_PATH="${CATEGORIES_PATH-}"
+[ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/categories'
 JAVA_OPTS="${JAVA_OPTS:-}"
 
 case "${1:-start}" in
     meta)
         printf 'NAME=%s\nSTACK=%s\nPORT=%s\nBENCH_PATH=%s\n' "$NAME" "$STACK" "$PORT" "$BENCH_PATH"
+        printf 'LIST_PATH=%s\nITEM_PATH=%s\nCATEGORIES_PATH=%s\n' "$LIST_PATH" "$ITEM_PATH" "$CATEGORIES_PATH"
         ;;
     check)
         command -v mvn >/dev/null 2>&1 || { echo "mvn not found" >&2; exit 1; }

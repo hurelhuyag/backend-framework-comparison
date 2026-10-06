@@ -37,10 +37,26 @@ replaces it with an apples-to-apples measurement.
 == Result (4 CPU / 4 GiB containers)
 
 Every demo is built into its own Docker image and benchmarked in a container capped at *4 CPU cores
-and 4 GiB RAM*, with `ab` pinned to a different set of cores so the load generator cannot compete
-with the server for CPU. Unlike the original run, every framework is asked for the *same 20 rows* of
-the same `content -> category -> parent` query, and the report prints the row count and payload size
-per framework so an unfair row is visible rather than hidden.
+and 4 GiB RAM*, with the load generator pinned to a different set of cores so it cannot compete with
+the server for CPU.
+
+The load is a *weighted mix* driven by k6 (`bench/mixed.js`), not a single URL, so response sizes
+vary within a run the way they would in production:
+
+[cols="<10,<34,<30",options="header"]
+|===
+| Weight | Request | Response
+
+| 55% | list, `size=20`            | ~4 KB
+| 15% | list, `size=1`             | a few hundred bytes
+| 10% | list, `size=100`           | ~20 KB
+| 15% | single item, random id     | ~200 bytes
+| 5%  | all categories             | ~110 rows
+|===
+
+Every framework gets the identical mix against the identical database, and the report records
+p50/p95/p99 latency per level alongside throughput. A level counts as `Failed` when more than 1% of
+requests come back non-2xx. `./run.sh --loadgen ab` falls back to the old single-URL `ab` profile.
 
 The harness picks the container's cores itself: `--cpus N` claims *N physical cores, one hardware
 thread each*, preferring efficiency cores. On a hybrid CPU a naive `--cpuset-cpus=0-3` would hand the
@@ -67,7 +83,7 @@ Everything between the markers below is written in place by `./run.sh` (and also
 as link:report.adoc[report.adoc]). Edit the harness, not this text.
 
 // BEGIN GENERATED REPORT
-Generated 2026-10-06T11:03:12+08:00.
+Generated 2026-10-06T12:05:11+08:00.
 
 === Setup
 
@@ -75,16 +91,100 @@ Generated 2026-10-06T11:03:12+08:00.
 ----
 mode        docker
 limits      --cpus=4 --cpuset-cpus=4-7 --memory=4g (swap disabled)
-cores       server cpus 4-7 = 4 physical cores, one thread each
 load gen    ab pinned to cpus 0-3,8-11
-network     --network host (no docker-proxy NAT in the measurement path)
 database    demo.sqlite copied into each image (no shared file between runs)
             journal_mode=wal - identical for every framework
-host        Linux 7.0.0-38-generic, 13th Gen Intel(R) Core(TM) i7-1355U x 12
-host memory 30.5 GiB
-ab          2.3
+load        grafana/k6:2.3.0, mixed read suite (bench/mixed.js)
+mix         55% list size=20 | 15% list size=1 | 10% list size=100
+            15% item by random id 1..10000 | 5% categories
 requests    -n 10000 per level
 levels      -c 1 10 100 1000 10000
+----
+
+=== Environment
+
+==== CPU
+
+[source]
+----
+model        13th Gen Intel(R) Core(TM) i7-1355U
+topology     12 logical / 10 physical: 2 cores @ 5000 MHz, SMT + 8 cores @ 3700 MHz
+server cpus  4-7  (4 physical cores, one thread each)
+load cpus    0-3,8-11
+governor     powersave (intel_pstate, epp=balance_performance)
+turbo        enabled
+----
+
+[CAUTION]
+====
+The CPU governor is not `performance`, so clock speed varies with load and package
+temperature during the run. On a laptop part this is the largest single source of
+run-to-run variance. For a publishable number, pin it first:
+
+ sudo cpupower frequency-set -g performance
+====
+
+==== Memory
+
+[source]
+----
+total        30.5 GiB
+available    19.2 GiB at run start
+host swap    4.0 GiB
+container    --memory=4g, swap disabled (--memory-swap equals --memory)
+swappiness   60
+THP          madvise
+----
+
+==== Storage
+
+[source]
+----
+database     demo.sqlite 620 KB, copied into each image
+docker root  /var/lib/docker on /dev/nvme0n1p5 (ext4, rw,relatime)
+device       nvme0n1p5, non-rotational, scheduler=none
+free         139G free of 320G (55% used)
+----
+
+NOTE: the workload is read-only against a database small enough to sit entirely in the page
+cache, so disk characteristics have almost no influence on these numbers. They are recorded
+for completeness, and they would matter immediately if write requests were added.
+
+==== Kernel and socket limits
+
+[source]
+----
+kernel       Linux 7.0.0-38-generic
+open files   ulimit -n = 65535
+ephemeral    32768-60999 (28232 ports)
+somaxconn    4096
+syn backlog  2048
+fin_timeout  60 s
+tw_reuse     2
+----
+
+NOTE: the ephemeral port range above caps how many sockets the load generator can hold
+open at once, and closed sockets linger in TIME_WAIT for fin_timeout seconds. The highest
+concurrency level can therefore run into a client-side kernel limit rather than a server
+limit, which is one reason a `Failed` there should not be read as a framework verdict. k6
+reuses connections by default, so it is far less exposed to this than non-keepalive `ab`.
+
+==== Container runtime
+
+[source]
+----
+docker       29.8.2, overlay2, cgroup v2 (systemd), runc
+security     apparmor,profile=default seccomp,profile=builtin cgroupns 
+network      --network host
+----
+
+==== Measurement hygiene
+
+[source]
+----
+load avg     0.71 2.25 3.33 at start -> 2.86 4.00 3.83 at end
+repetitions  1 per level (no median of repeats)
+isolation    one server at a time, container removed before the next starts
 ----
 
 === Requests per second
@@ -93,14 +193,35 @@ levels      -c 1 10 100 1000 10000
 |===
 | Platform | 1 | 10 | 100 | 1000 | 10000
 
-| DotNet10/AspNetCore/EFCore | 1233.60 | 7627.78 | 8696.72 | 7957.94 | 6112.10
-| Go/Gorm/Gorilla | 1788.83 | 9291.63 | 8743.42 | 8710.57 | 9339.01
-| OpenJDK/Spring/Hibernate | 830.39 | 3106.16 | 7217.98 | 5382.22 | 6569.81
-| Node/NextJS/Prisma | 592.80 | 999.64 | 1015.78 | 670.10 | 645.87
-| Nginx/Php8.4/Laravel | 140.36 | 804.24 | 821.73 | 787.53 | Failed
-| Python/Django/Gunicorn | 121.49 | 343.08 | 385.12 | 342.27 | Failed
-| Rust1.99/Axum0.8/SeaORM2.0 | 3240.62 | 9409.02 | 10077.45 | 9545.68 | Failed
+| DotNet10/AspNetCore/EFCore | 1243.35 | 8375.07 | 9519.57 | 8619.40 | 6759.63
+| Go/Gorm/Gorilla | 1823.52 | 9051.88 | 8682.04 | 8711.57 | 7024.92
+| GraalVM25/Spring4.1/Hibernate7 (native) | 933.68 | 3639.85 | 3752.66 | 3646.46 | Failed
+| OpenJDK25/Spring4.1/Hibernate7 | 846.16 | 3712.41 | 6554.28 | 7117.36 | Failed
+| Node/NextJS/Prisma | 612.37 | 1088.00 | 1116.41 | Failed | Failed
+| Nginx/Php8.4/Laravel | 165.00 | 814.25 | 819.05 | 819.93 | Failed
+| Python/Django/Gunicorn | 99.54 | 442.23 | 436.63 | 425.24 | Failed
+| Rust1.99/Axum0.8/SeaORM2.0 | 2320.79 | 10120.45 | 9676.93 | 990.98* | Failed
 |===
+
+=== Latency p95 (ms, lower is better)
+
+[cols="<28,>10,>10,>10,>10,>10",options="header"]
+|===
+| Platform | 1 | 10 | 100 | 1000 | 10000
+
+| DotNet10/AspNetCore/EFCore | 1.87 | 2.11 | 13.97 | 148.83 | 1006.68
+| Go/Gorm/Gorilla | 0.96 | 2.56 | 42.39 | 257.53 | 985.88
+| GraalVM25/Spring4.1/Hibernate7 (native) | 2.41 | 4.55 | 30.48 | 292.56 | -
+| OpenJDK25/Spring4.1/Hibernate7 | 2.56 | 5.75 | 24.94 | 149.44 | -
+| Node/NextJS/Prisma | 2.53 | 11.35 | 91.97 | - | -
+| Nginx/Php8.4/Laravel | 9.16 | 22.92 | 145.27 | 1235.62 | -
+| Python/Django/Gunicorn | 32.78 | 46.17 | 267.13 | 2471.12 | -
+| Rust1.99/Axum0.8/SeaORM2.0 | 0.76 | 2.03 | 12.47 | 122.37 | -
+|===
+
+A `*` marks a level where some requests errored or timed out. Those stalls inflate the
+elapsed time the throughput is divided by, so a starred number understates the server and
+should not be compared directly. See Partial failures below for the counts.
 
 === Per-framework detail
 
@@ -108,33 +229,38 @@ levels      -c 1 10 100 1000 10000
 |===
 | Platform | Endpoint | Rows | Bytes | First 200 | Peak RSS | Image | Build | Measured
 
-| DotNet10/AspNetCore/EFCore | `/api/contents?size=20` | 20 | 3969 | 2157 ms | 370 MiB | 258 MiB | 1s | 2026-10-06
-| Go/Gorm/Gorilla | `/contents?size=20` | 20 | 4660 | 177 ms | 321 MiB | 83 MiB | 8s | 2026-10-06
-| OpenJDK/Spring/Hibernate | `/contents?size=20` | 20 | 3700 | 5305 ms | 754 MiB | 393 MiB | 2s | 2026-10-06
-| Node/NextJS/Prisma | `/api/contents?pageSize=20` | 20 | 3698 | 1263 ms | 941 MiB | 1018 MiB | 3s | 2026-10-06
-| Nginx/Php8.4/Laravel | `/api/contents?page_size=20` | 20 | 3731 | 1472 ms | 296 MiB | 512 MiB | 5s | 2026-10-06
-| Python/Django/Gunicorn | `/contents/?page_size=20` | 20 | 2734 | 1258 ms | 187 MiB | 161 MiB | 2s | 2026-10-06
-| Rust1.99/Axum0.8/SeaORM2.0 | `/api/contents?size=20` | 20 | 3969 | 310 ms | 57 MiB | 76 MiB | - | 2026-10-06
+| DotNet10/AspNetCore/EFCore | `/api/contents?size=20` | 20 | 3969 | 2180 ms | 393 MiB | 258 MiB | 1s | 2026-10-06
+| Go/Gorm/Gorilla | `/contents?size=20` | 20 | 4660 | 160 ms | 596 MiB | 83 MiB | 1s | 2026-10-06
+| GraalVM25/Spring4.1/Hibernate7 (native) | `/contents?size=20` | 20 | 3700 | 1260 ms | 363 MiB | 241 MiB | 1s | 2026-10-06
+| OpenJDK25/Spring4.1/Hibernate7 | `/contents?size=20` | 20 | 3700 | 5610 ms | 623 MiB | 389 MiB | 1s | 2026-10-06
+| Node/NextJS/Prisma | `/api/contents?pageSize=20` | 20 | 3698 | 1290 ms | 631 MiB | 1018 MiB | 2s | 2026-10-06
+| Nginx/Php8.4/Laravel | `/api/contents?page_size=20` | 20 | 3731 | 1430 ms | 302 MiB | 512 MiB | 2s | 2026-10-06
+| Python/Django/Gunicorn | `/contents/?page_size=20` | 20 | 2734 | 1230 ms | 175 MiB | 161 MiB | 2s | 2026-10-06
+| Rust1.99/Axum0.8/SeaORM2.0 | `/api/contents?size=20` | 20 | 3969 | 150 ms | 68 MiB | 76 MiB | 2s | 2026-10-06
 |===
 
 === Partial failures
 
-* *Node/NextJS/Prisma* - c1000:627 failed
-* *Nginx/Php8.4/Laravel* - c10000:4012 non-2xx
-* *Python/Django/Gunicorn* - c10000:24 non-2xx
-* *Rust1.99/Axum0.8/SeaORM2.0* - c10000:ab aborted
+* *GraalVM25/Spring4.1/Hibernate7 (native)* - c10000:fail rate 0.18
+* *OpenJDK25/Spring4.1/Hibernate7* - c10000:fail rate 0.18
+* *Node/NextJS/Prisma* - c1000:fail rate 0.02; c10000:fail rate 0.37
+* *Nginx/Php8.4/Laravel* - c10000:fail rate 0.39
+* *Python/Django/Gunicorn* - c10000:fail rate 0.58
+* *Rust1.99/Axum0.8/SeaORM2.0* - c1000:19 req errors (max 10000.38ms); c10000:fail rate 0.90
 
 === Reading these numbers
 
-* Every framework is asked for *20 rows* of the same `content -> category -> parent`
-  query, so the Rows column should read 20 everywhere. If it does not, that row is not
-  comparable.
+* Each framework gets the *same weighted mix* of three endpoints and three page sizes,
+  so response sizes vary from a few hundred bytes to ~20 KB within a single run. The
+  per-framework Bytes column below is the size=20 list response, used as a sanity check
+  that every framework returns the same 20 rows.
+* A level counts as Failed when more than 1% of requests are non-2xx.
 * Query _count_ is an ORM property, not a language property: Hibernate's entity graph
   resolves the nested parent in one join, while Prisma, Django and SeaORM issue a second
   query for it. That shows up here as a framework difference.
 * Only one server runs at a time, and each container is removed before the next starts.
-* `ab` is a single-threaded, non-keepalive load generator. At c=1000+ it is often the
-  bottleneck rather than the server, which is why the high-concurrency columns compress.
+* k6 is multi-threaded and runs in its own container pinned to the cores the server is
+  not using, so it is far less likely to be the bottleneck than `ab` was.
 * Peak RSS is the container's cgroup `memory.peak`, so it includes the runtime, not just
   the heap.
 * Raw ab output per level is under `.bench-logs/`.
@@ -170,7 +296,13 @@ contract needs no changes to the harness.
 | `demo-hibernate-sqlite` | OpenJDK / Spring / Hibernate     | 8080 | `/contents?size=20`
 | `demo-rust`             | Rust / Axum / SeaORM             | 8081 | `/api/contents?size=20`
 | `demo-dotnet`           | C# / ASP.NET Core / EF Core      | 8082 | `/api/contents?size=20`
+| `demo-graalvm`          | GraalVM native / Spring / Hibernate | 8083 | `/contents?size=20`
 |===
 
-TIP: `demo-hibernate-sqlite/run.sh` also covers the GraalVM native-image row — set `NATIVE=1` to
-build and run it instead of the JVM jar.
+NOTE: `demo-graalvm` holds no Java source of its own. Its `Dockerfile` compiles a native image from
+`demo-hibernate-sqlite`'s sources, so the GraalVM row and the OpenJDK row are the *same application*
+differing only in how it was compiled.
+
+Each `run.sh` also publishes `LIST_PATH`, `ITEM_PATH` and `CATEGORIES_PATH` templates (with `{size}`
+and `{id}` placeholders), which is how one k6 script drives frameworks that spell their endpoints
+differently.

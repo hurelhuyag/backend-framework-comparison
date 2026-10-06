@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# GraalVM native image of the Spring/Hibernate demo.
+#
+# This directory holds no Java source: it builds a native binary from the sources in
+# ../demo-hibernate-sqlite, so the JVM row and the native row compare the SAME application.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$HERE")"
+
+NAME="${NAME:-graalvm}"
+STACK="${STACK:-GraalVM25/Spring4.1/Hibernate7 (native)}"
+PORT="${PORT:-8083}"
+BENCH_PATH="${BENCH_PATH:-/contents?size=20}"
+LIST_PATH="${LIST_PATH-}"
+[ -n "$LIST_PATH" ] || LIST_PATH='/contents?size={size}'
+ITEM_PATH="${ITEM_PATH-}"
+[ -n "$ITEM_PATH" ] || ITEM_PATH='/contents/{id}'
+CATEGORIES_PATH="${CATEGORIES_PATH-}"
+[ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/categories'
+APP="${APP:-$HERE/demo-graalvm-app}"
+SRC="${SRC:-$ROOT/demo-hibernate-sqlite}"
+
+case "${1:-start}" in
+    meta)
+        printf 'NAME=%s\nSTACK=%s\nPORT=%s\nBENCH_PATH=%s\n' "$NAME" "$STACK" "$PORT" "$BENCH_PATH"
+        printf 'LIST_PATH=%s\nITEM_PATH=%s\nCATEGORIES_PATH=%s\n' "$LIST_PATH" "$ITEM_PATH" "$CATEGORIES_PATH"
+        ;;
+    check)
+        command -v native-image >/dev/null 2>&1 || { echo "native-image not found (needs a GraalVM JDK)" >&2; exit 1; }
+        command -v mvn >/dev/null 2>&1 || { echo "mvn not found" >&2; exit 1; }
+        ;;
+    build)
+        # -Pnative comes from spring-boot-starter-parent; this pom defines no profiles itself.
+        cd "$SRC"
+        mvn -B -DskipTests -Pnative clean package native:compile
+        cp "$SRC/target/demo-hibernate-sqlite" "$APP"
+        ;;
+    start)
+        # application.properties uses jdbc:sqlite:demo.sqlite (relative), so start from the repo root.
+        cd "$ROOT"
+        exec "$APP" --server.port="$PORT"
+        ;;
+    *)
+        echo "usage: $0 {meta|check|build|start}" >&2; exit 2
+        ;;
+esac

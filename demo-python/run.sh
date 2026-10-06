@@ -9,6 +9,12 @@ NAME="${NAME:-python}"
 STACK="${STACK:-Python/Django/Gunicorn}"
 PORT="${PORT:-8000}"
 BENCH_PATH="${BENCH_PATH:-/contents/?page_size=20}"
+LIST_PATH="${LIST_PATH-}"
+[ -n "$LIST_PATH" ] || LIST_PATH='/contents/?page_size={size}'
+ITEM_PATH="${ITEM_PATH-}"
+[ -n "$ITEM_PATH" ] || ITEM_PATH='/contents/{id}/'
+CATEGORIES_PATH="${CATEGORIES_PATH-}"
+[ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/categories/'
 DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
 WORKERS="${WORKERS:-4}"
 VENV="${VENV:-$HERE/.venv}"
@@ -16,6 +22,7 @@ VENV="${VENV:-$HERE/.venv}"
 case "${1:-start}" in
     meta)
         printf 'NAME=%s\nSTACK=%s\nPORT=%s\nBENCH_PATH=%s\n' "$NAME" "$STACK" "$PORT" "$BENCH_PATH"
+        printf 'LIST_PATH=%s\nITEM_PATH=%s\nCATEGORIES_PATH=%s\n' "$LIST_PATH" "$ITEM_PATH" "$CATEGORIES_PATH"
         ;;
     check)
         command -v python3 >/dev/null 2>&1 || { echo "python3 not found" >&2; exit 1; }

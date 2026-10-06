@@ -18,11 +18,18 @@ else
 fi
 PORT="${PORT:-8001}"
 BENCH_PATH="${BENCH_PATH:-/api/contents?page_size=20}"
+LIST_PATH="${LIST_PATH-}"
+[ -n "$LIST_PATH" ] || LIST_PATH='/api/contents?page_size={size}'
+ITEM_PATH="${ITEM_PATH-}"
+[ -n "$ITEM_PATH" ] || ITEM_PATH='/api/contents/{id}'
+CATEGORIES_PATH="${CATEGORIES_PATH-}"
+[ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/api/categories'
 DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
 
 case "${1:-start}" in
     meta)
         printf 'NAME=%s\nSTACK=%s\nPORT=%s\nBENCH_PATH=%s\n' "$NAME" "$STACK" "$PORT" "$BENCH_PATH"
+        printf 'LIST_PATH=%s\nITEM_PATH=%s\nCATEGORIES_PATH=%s\n' "$LIST_PATH" "$ITEM_PATH" "$CATEGORIES_PATH"
         ;;
     check)
         if [ "$PHP_SERVER" = "external" ]; then exit 0; fi

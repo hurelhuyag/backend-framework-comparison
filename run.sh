@@ -22,6 +22,7 @@
 #   ./run.sh --no-build                reuse existing images / builds
 #   ./run.sh --list                    show what was discovered
 #   ./run.sh --report-only             rebuild the report from stored results, measure nothing
+#   ./run.sh --loadgen ab              single-URL ab instead of the mixed k6 suite
 #
 set -uo pipefail
 # Deterministic numeric formatting: under a comma-decimal locale, awk parses "12345.67"
@@ -40,6 +41,9 @@ LOGDIR="${LOGDIR:-$ROOT/.bench-logs}"
 RESULTDIR="${RESULTDIR:-$LOGDIR/results}"
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
 HOSTPORT_BASE="${HOSTPORT_BASE:-19080}"
+LOADGEN="${LOADGEN:-k6}"
+K6_IMAGE="${K6_IMAGE:-grafana/k6:2.3.0}"
+K6_SCRIPT="${K6_SCRIPT:-$ROOT/bench/mixed.js}"
 JOURNAL="${JOURNAL:-WAL}"
 DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
 ONLY=""
@@ -101,6 +105,7 @@ while [ $# -gt 0 ]; do
         --server-cpus) SERVER_CPUS="$2"; shift 2 ;;
         --load-cpus) LOAD_CPUS="$2"; shift 2 ;;
         --journal) JOURNAL="$2"; shift 2 ;;
+        --loadgen) LOADGEN="$2"; shift 2 ;;
         --list) LIST_ONLY=1; shift ;;
         --report-only) ONLY="__none__"; DO_BUILD=0; shift ;;
         -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
@@ -116,7 +121,20 @@ if [ -z "$SERVER_CPUS" ] || [ -z "$LOAD_CPUS" ]; then
 fi
 [ -n "$SERVER_CPUS" ] || SERVER_CPUS="0-$((CPUS - 1))"
 
-command -v ab >/dev/null 2>&1 || { echo "ab (apache2-utils) is required" >&2; exit 1; }
+if [ "$LOADGEN" = ab ]; then
+    command -v ab >/dev/null 2>&1 || { echo "ab (apache2-utils) is required" >&2; exit 1; }
+elif [ "$LOADGEN" = k6 ]; then
+    [ -f "$K6_SCRIPT" ] || { echo "k6 script not found: $K6_SCRIPT" >&2; exit 1; }
+    command -v docker >/dev/null 2>&1 || { echo "docker is required to run k6" >&2; exit 1; }
+else
+    echo "unknown --loadgen: $LOADGEN (expected k6 or ab)" >&2; exit 1
+fi
+
+# Random ids for the item endpoint are drawn from 1..MAX_ID.
+MAX_ID="${MAX_ID:-$(python3 -I -c "
+import sqlite3,sys
+print(sqlite3.connect(sys.argv[1]).execute('select max(id) from content').fetchone()[0])
+" "$DEMO_DB" 2>/dev/null || echo 10000)}"
 if [ "$MODE" = docker ]; then
     command -v docker >/dev/null 2>&1 || { echo "docker is required for --docker mode" >&2; exit 1; }
     docker info >/dev/null 2>&1 || { echo "cannot reach the docker daemon" >&2; exit 1; }
@@ -134,6 +152,7 @@ if [ -n "$LOAD_CPUS" ] && command -v taskset >/dev/null 2>&1; then
 fi
 
 mkdir -p "$LOGDIR" "$RESULTDIR"
+LOADAVG_START="$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo '?')"
 ulimit -n 65535 2>/dev/null || true
 
 port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
@@ -180,7 +199,7 @@ print("?")
 }
 
 # ---- discover ----------------------------------------------------------------
-declare -a NAMES STACKS PORTS PATHS DIRS
+declare -a NAMES STACKS PORTS PATHS DIRS LISTPATHS ITEMPATHS CATPATHS
 for sh in "$ROOT"/demo-*/run.sh; do
     [ -f "$sh" ] || continue
     dir="$(dirname "$sh")"
@@ -192,8 +211,12 @@ for sh in "$ROOT"/demo-*/run.sh; do
     stack="$(sed -n 's/^STACK=//p'      <<<"$meta")"
     port="$(sed -n 's/^PORT=//p'        <<<"$meta")"
     bpath="$(sed -n 's/^BENCH_PATH=//p' <<<"$meta")"
+    lpath="$(sed -n 's/^LIST_PATH=//p' <<<"$meta")"
+    ipath="$(sed -n 's/^ITEM_PATH=//p' <<<"$meta")"
+    cpath="$(sed -n 's/^CATEGORIES_PATH=//p' <<<"$meta")"
     [ -n "$name" ] || continue
     NAMES+=("$name"); STACKS+=("$stack"); PORTS+=("$port"); PATHS+=("$bpath"); DIRS+=("$dir")
+    LISTPATHS+=("$lpath"); ITEMPATHS+=("$ipath"); CATPATHS+=("$cpath")
 done
 
 [ "${#NAMES[@]}" -gt 0 ] || { echo "no demos matched" >&2; exit 1; }
@@ -206,7 +229,7 @@ if [ "$LIST_ONLY" -eq 1 ]; then
     exit 0
 fi
 
-declare -A RPS SKIPPED ROWS BYTES NOTE IMGSIZE BOOTMS BUILDS PEAKMEM
+declare -A RPS SKIPPED ROWS BYTES NOTE IMGSIZE BOOTMS BUILDS PEAKMEM P50 P95 P99
 
 if [ "$MODE" = docker ]; then
     echo "mode=docker  cpus=$CPUS (cpuset $SERVER_CPUS)  memory=$MEMORY  ab on cpus=${LOAD_CPUS:-all}"
@@ -340,7 +363,50 @@ for i in "${!NAMES[@]}"; do
     # ---- measure -----------------------------------------------------------
     for c in $LEVELS; do
         out="$log.c$c.log"
-        if "${AB[@]}" -n "$REQUESTS" -c "$c" -s 60 -r "$url" >"$out" 2>&1; then
+        if [ "$LOADGEN" = k6 ]; then
+            if docker run --rm --network host \
+                    ${LOAD_CPUS:+--cpuset-cpus="$LOAD_CPUS"} \
+                    -v "$K6_SCRIPT":/mix.js:ro \
+                    -e BASE="http://127.0.0.1:${hostport}" \
+                    -e LIST_PATH="${LISTPATHS[$i]}" \
+                    -e ITEM_PATH="${ITEMPATHS[$i]}" \
+                    -e CATEGORIES_PATH="${CATPATHS[$i]}" \
+                    -e MAX_ID="$MAX_ID" \
+                    "$K6_IMAGE" run --quiet --vus "$c" --iterations "$REQUESTS" /mix.js \
+                    >"$out" 2>&1; then
+                read -r r f p50 p95 p99 pmax nfail <<<"$(sed -n 's/^K6SUMMARY //p' "$out" | head -1 | python3 -I -c "
+import json,sys
+raw = sys.stdin.read().strip()
+if not raw:
+    print('- - - - - - 0'); sys.exit()
+d = json.loads(raw)
+fmt = lambda v: ('%.2f' % v) if isinstance(v, (int, float)) else '-'
+print(fmt(d.get('rps')), fmt(d.get('failed_rate')), fmt(d.get('p50')), fmt(d.get('p95')),
+      fmt(d.get('p99')), fmt(d.get('max')), int(d.get('failed_count') or 0))
+" 2>/dev/null)"
+                if [ "${r:--}" != "-" ] && [ "$(awk -v f="${f:-1}" 'BEGIN{print (f+0 < 0.01) ? 1 : 0}')" = 1 ]; then
+                    # A few stalled requests can dominate wall-clock and wreck req/s while still
+                    # passing the failure gate, so mark the level instead of reporting it clean.
+                    suspect=""
+                    if [ "${nfail:-0}" -gt 0 ]; then
+                        suspect="*"
+                        NOTE[$name]="${NOTE[$name]:-}c$c:${nfail} req errors (max ${pmax}ms); "
+                    fi
+                    RPS[$name,$c]="${r}${suspect}"; P50[$name,$c]="$p50"
+                    P95[$name,$c]="$p95"; P99[$name,$c]="$p99"
+                    printf '    c=%-6s %10s req/s%-1s  p50=%-8s p95=%-8s p99=%-8s max=%s\n' \
+                        "$c" "$r" "$suspect" "$p50" "$p95" "$p99" "$pmax"
+                else
+                    RPS[$name,$c]="Failed"
+                    NOTE[$name]="${NOTE[$name]:-}c$c:fail rate ${f:-?}; "
+                    printf '    c=%-6s %10s  (fail rate %s)\n' "$c" "Failed" "${f:-?}"
+                fi
+            else
+                RPS[$name,$c]="Failed"
+                NOTE[$name]="${NOTE[$name]:-}c$c:k6 aborted; "
+                printf '    c=%-6s %10s  (k6 aborted)\n' "$c" "Failed"
+            fi
+        elif "${AB[@]}" -n "$REQUESTS" -c "$c" -s 60 -r "$url" >"$out" 2>&1; then
             r="$(sed -n 's/^Requests per second: *\([0-9.]*\).*/\1/p' "$out" | head -1)"
             nn="$(sed -n 's/^Non-2xx responses: *\([0-9]*\).*/\1/p' "$out" | head -1)"
             fr="$(sed -n 's/^Failed requests: *\([0-9]*\).*/\1/p' "$out" | head -1)"
@@ -378,7 +444,13 @@ for i in "${!NAMES[@]}"; do
         echo "LIMITS=$LIMITS_DESC"
         echo "REQUESTS=$REQUESTS"
         echo "LEVELS=$LEVELS"
-        for c in $LEVELS; do echo "RPS_$c=${RPS[$name,$c]:-}"; done
+        echo "LOADGEN=$LOADGEN"
+        for c in $LEVELS; do
+            echo "RPS_$c=${RPS[$name,$c]:-}"
+            echo "P50_$c=${P50[$name,$c]:-}"
+            echo "P95_$c=${P95[$name,$c]:-}"
+            echo "P99_$c=${P99[$name,$c]:-}"
+        done
     } >"$RESULTDIR/$name.env"
 
     # ---- teardown ----------------------------------------------------------
@@ -393,6 +465,138 @@ for i in "${!NAMES[@]}"; do
     wait_for_port_free "$hostport" || echo "    warn: host port $hostport still busy"
     echo
 done
+
+# ---- environment -------------------------------------------------------------
+rd() { cat "$1" 2>/dev/null || echo "n/a"; }
+
+# "2 P-cores (SMT, 5000 MHz) + 8 E-cores (3700 MHz)" style summary, derived from sysfs.
+cpu_topology() {
+    python3 -I - <<'TOPO'
+import pathlib
+from collections import defaultdict
+base = pathlib.Path('/sys/devices/system/cpu')
+cores = {}
+for d in sorted(base.glob('cpu[0-9]*'), key=lambda p: int(p.name[3:])):
+    core = d / 'topology' / 'core_id'
+    if not core.exists():
+        continue
+    cid = int(core.read_text().strip())
+    f = d / 'cpufreq' / 'cpuinfo_max_freq'
+    freq = int(f.read_text().strip()) // 1000 if f.exists() else 0
+    e = cores.setdefault(cid, {'threads': 0, 'freq': freq})
+    e['threads'] += 1
+    e['freq'] = max(e['freq'], freq)
+if not cores:
+    print('n/a'); raise SystemExit
+groups = defaultdict(lambda: [0, 0])
+for info in cores.values():
+    g = groups[(info['freq'], info['threads'])]
+    g[0] += 1
+    g[1] = info['threads']
+logical = sum(i['threads'] for i in cores.values())
+parts = []
+for (freq, threads), (count, _) in sorted(groups.items(), reverse=True):
+    smt = ', SMT' if threads > 1 else ''
+    parts.append(f"{count} core{'s' if count != 1 else ''} @ {freq} MHz{smt}")
+print(f"{logical} logical / {len(cores)} physical: " + ' + '.join(parts))
+TOPO
+}
+
+emit_environment() {
+    local droot dsrc dfs dopts dev rot dbsize
+    droot="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo n/a)"
+    read -r dsrc dfs dopts <<<"$(findmnt -no SOURCE,FSTYPE,OPTIONS --target "$droot" 2>/dev/null || echo 'n/a n/a n/a')"
+    dev="$(sed 's/\[.*//' <<<"$dsrc")"
+    rot="$(lsblk -dno ROTA "$dev" 2>/dev/null | tr -d ' ')"
+    dbsize="$(stat -c %s "$DEMO_DB" 2>/dev/null | awk '{printf "%.0f KB", $1/1024}')"
+
+    echo '== Environment'
+    echo
+    echo '=== CPU'
+    echo
+    echo '[source]'
+    echo '----'
+    echo "model        $(sed -n 's/^model name[ \t]*: //p' /proc/cpuinfo | head -1)"
+    echo "topology     $(cpu_topology)"
+    echo "server cpus  $SERVER_CPUS  ($CPUS physical cores, one thread each)"
+    echo "load cpus    ${LOAD_CPUS:-all}"
+    echo "governor     $(rd /sys/devices/system/cpu/cpufreq/policy0/scaling_governor) ($(rd /sys/devices/system/cpu/cpufreq/policy0/scaling_driver), epp=$(rd /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference))"
+    echo "turbo        $([ "$(rd /sys/devices/system/cpu/intel_pstate/no_turbo)" = 0 ] && echo enabled || echo "disabled/unknown")"
+    echo '----'
+    echo
+    if [ "$(rd /sys/devices/system/cpu/cpufreq/policy0/scaling_governor)" != performance ]; then
+        echo '[CAUTION]'
+        echo '===='
+        echo "The CPU governor is not \`performance\`, so clock speed varies with load and package"
+        echo 'temperature during the run. On a laptop part this is the largest single source of'
+        echo 'run-to-run variance. For a publishable number, pin it first:'
+        echo
+        echo ' sudo cpupower frequency-set -g performance'
+        echo '===='
+        echo
+    fi
+    echo '=== Memory'
+    echo
+    echo '[source]'
+    echo '----'
+    awk '/MemTotal/ {printf "total        %.1f GiB\n", $2/1048576} /MemAvailable/ {printf "available    %.1f GiB at run start\n", $2/1048576} /SwapTotal/ {printf "host swap    %.1f GiB\n", $2/1048576}' /proc/meminfo
+    echo "container    --memory=$MEMORY, swap disabled (--memory-swap equals --memory)"
+    echo "swappiness   $(rd /proc/sys/vm/swappiness)"
+    echo "THP          $(sed -n 's/.*\[\(.*\)\].*/\1/p' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo n/a)"
+    echo '----'
+    echo
+    echo '=== Storage'
+    echo
+    echo '[source]'
+    echo '----'
+    echo "database     $(basename "$DEMO_DB") ${dbsize:-?}, copied into each image"
+    echo "docker root  $droot on $dsrc ($dfs, $dopts)"
+    echo "device       $(basename "$dev"), $([ "$rot" = 0 ] && echo non-rotational || echo rotational), scheduler=$(sed -n 's/.*\[\(.*\)\].*/\1/p' "/sys/block/$(lsblk -dno PKNAME "$dev" 2>/dev/null || basename "$dev")/queue/scheduler" 2>/dev/null || echo n/a)"
+    echo "free         $(df -h --output=avail,size,pcent "$droot" 2>/dev/null | tail -1 | awk '{print $1" free of "$2" ("$3" used)"}')"
+    echo '----'
+    echo
+    echo 'NOTE: the workload is read-only against a database small enough to sit entirely in the page'
+    echo 'cache, so disk characteristics have almost no influence on these numbers. They are recorded'
+    echo 'for completeness, and they would matter immediately if write requests were added.'
+    echo
+    echo '=== Kernel and socket limits'
+    echo
+    echo '[source]'
+    echo '----'
+    echo "kernel       $(uname -sr)"
+    echo "open files   ulimit -n = $(ulimit -Sn)"
+    echo "ephemeral    $(sysctl -n net.ipv4.ip_local_port_range 2>/dev/null | tr '\t' '-') ($(sysctl -n net.ipv4.ip_local_port_range 2>/dev/null | awk '{print $2-$1+1}') ports)"
+    echo "somaxconn    $(sysctl -n net.core.somaxconn 2>/dev/null)"
+    echo "syn backlog  $(sysctl -n net.ipv4.tcp_max_syn_backlog 2>/dev/null)"
+    echo "fin_timeout  $(sysctl -n net.ipv4.tcp_fin_timeout 2>/dev/null) s"
+    echo "tw_reuse     $(sysctl -n net.ipv4.tcp_tw_reuse 2>/dev/null)"
+    echo '----'
+    echo
+    echo 'NOTE: the ephemeral port range above caps how many sockets the load generator can hold'
+    echo "open at once, and closed sockets linger in TIME_WAIT for fin_timeout seconds. The highest"
+    echo 'concurrency level can therefore run into a client-side kernel limit rather than a server'
+    echo 'limit, which is one reason a `Failed` there should not be read as a framework verdict. k6'
+    echo 'reuses connections by default, so it is far less exposed to this than non-keepalive `ab`.'
+    echo
+    echo '=== Container runtime'
+    echo
+    echo '[source]'
+    echo '----'
+    docker info --format 'docker       {{.ServerVersion}}, {{.Driver}}, cgroup v{{.CgroupVersion}} ({{.CgroupDriver}}), {{.DefaultRuntime}}' 2>/dev/null || echo "docker       n/a"
+    echo "security     $(docker info --format '{{range .SecurityOptions}}{{.}} {{end}}' 2>/dev/null | sed 's/name=//g')"
+    echo "network      --network host"
+    echo '----'
+    echo
+    echo '=== Measurement hygiene'
+    echo
+    echo '[source]'
+    echo '----'
+    echo "load avg     $LOADAVG_START at start -> $(cut -d' ' -f1-3 /proc/loadavg) at end"
+    echo "repetitions  1 per level (no median of repeats)"
+    echo "isolation    one server at a time, container removed before the next starts"
+    echo '----'
+    echo
+}
 
 # ---- report ------------------------------------------------------------------
 # Rendered as AsciiDoc so README.adoc can include:: it. Rows are read back from
@@ -414,9 +618,7 @@ stale=0
     echo "mode        $MODE"
     if [ "$MODE" = docker ]; then
         echo "limits      $LIMITS_DESC"
-        echo "cores       server cpus $SERVER_CPUS = $CPUS physical cores, one thread each"
-        echo "load gen    ab pinned to cpus ${LOAD_CPUS:-all}"
-        echo "network     --network host (no docker-proxy NAT in the measurement path)"
+            echo "load gen    ab pinned to cpus ${LOAD_CPUS:-all}"
         echo "database    demo.sqlite copied into each image (no shared file between runs)"
         echo "            journal_mode=$(python3 -I -c "
 import sqlite3,sys
@@ -425,13 +627,18 @@ print(sqlite3.connect(sys.argv[1]).execute('pragma journal_mode').fetchone()[0])
     else
         echo "database    $DEMO_DB (journal_mode=$JOURNAL)"
     fi
-    echo "host        $(uname -sr), $(sed -n 's/^model name[ \t]*: //p' /proc/cpuinfo | head -1) x $NCPU"
-    echo "host memory $(awk '/MemTotal/ {printf "%.1f GiB", $2/1048576}' /proc/meminfo)"
-    echo "ab          $(ab -V 2>&1 | sed -n 's/.*Version \([0-9.]*\).*/\1/p' | head -1)"
+    if [ "$LOADGEN" = k6 ]; then
+        echo "load        $K6_IMAGE, mixed read suite (bench/mixed.js)"
+        echo "mix         55% list size=20 | 15% list size=1 | 10% list size=100"
+        echo "            15% item by random id 1..$MAX_ID | 5% categories"
+    else
+        echo "load        ab $(ab -V 2>&1 | sed -n 's/.*Version \([0-9.]*\).*/\1/p' | head -1), single URL"
+    fi
     echo "requests    -n $REQUESTS per level"
     echo "levels      -c $LEVELS"
     echo '----'
     echo
+    emit_environment
     echo '== Requests per second'
     echo
     echo "[cols=\"$colspec\",options=\"header\"]"
@@ -447,6 +654,32 @@ print(sqlite3.connect(sys.argv[1]).execute('pragma journal_mode').fetchone()[0])
     done
     echo '|==='
     echo
+
+    if [ "$(getf "${NAMES[0]}" LOADGEN)" = k6 ] || [ "$LOADGEN" = k6 ]; then
+        echo '== Latency p95 (ms, lower is better)'
+        echo
+        echo "[cols=\"$colspec\",options=\"header\"]"
+        echo '|==='
+        printf '| Platform'; for c in $LEVELS; do printf ' | %s' "$c"; done; echo
+        echo
+        for i in "${!NAMES[@]}"; do
+            name="${NAMES[$i]}"
+            [ -f "$RESULTDIR/$name.env" ] || continue
+            printf '| %s' "$(getf "$name" STACK)"
+            for c in $LEVELS; do
+                v="$(getf "$name" "P95_$c")"
+                printf ' | %s' "${v:--}"
+            done
+            echo
+        done
+        echo '|==='
+        echo
+    fi
+
+    echo 'A `*` marks a level where some requests errored or timed out. Those stalls inflate the'
+    echo 'elapsed time the throughput is divided by, so a starred number understates the server and'
+    echo 'should not be compared directly. See Partial failures below for the counts.'
+    echo
     echo '== Per-framework detail'
     echo
     echo '[cols="<28,<26,>6,>7,>9,>9,>8,>7,<12",options="header"]'
@@ -458,6 +691,7 @@ print(sqlite3.connect(sys.argv[1]).execute('pragma journal_mode').fetchone()[0])
         [ -f "$RESULTDIR/$name.env" ] || continue
         when="$(getf "$name" WHEN)"
         [ "$(getf "$name" LIMITS)" = "$LIMITS_DESC" ] || stale=1
+        [ "$(getf "$name" LOADGEN)" = "$LOADGEN" ] || stale=1
         printf '| %s | `%s` | %s | %s | %s | %s | %s | %s | %s\n' \
             "$(getf "$name" STACK)" "$(getf "$name" BPATH)" \
             "$(getf "$name" ROWS)" "$(getf "$name" BYTES)" \
@@ -503,23 +737,37 @@ print(sqlite3.connect(sys.argv[1]).execute('pragma journal_mode').fetchone()[0])
     if [ "$stale" -eq 1 ]; then
         echo '[WARNING]'
         echo '===='
-        echo 'Some rows were measured under different limits than the run that wrote this report.'
-        echo 'Check the Measured column and re-run `./run.sh` for a single consistent set.'
+        echo 'Some rows were measured under different limits or a different load generator than the'
+        echo 'run that wrote this report. Check the Measured column and re-run `./run.sh` for a'
+        echo 'single consistent set.'
         echo '===='
         echo
     fi
 
     echo '== Reading these numbers'
     echo
-    echo "* Every framework is asked for *20 rows* of the same \`content -> category -> parent\`"
-    echo "  query, so the Rows column should read 20 everywhere. If it does not, that row is not"
-    echo "  comparable."
+    if [ "$LOADGEN" = k6 ]; then
+        echo "* Each framework gets the *same weighted mix* of three endpoints and three page sizes,"
+        echo "  so response sizes vary from a few hundred bytes to ~20 KB within a single run. The"
+        echo "  per-framework Bytes column below is the size=20 list response, used as a sanity check"
+        echo "  that every framework returns the same 20 rows."
+        echo "* A level counts as Failed when more than 1% of requests are non-2xx."
+    else
+        echo "* Every framework is asked for *20 rows* of the same \`content -> category -> parent\`"
+        echo "  query, so the Rows column should read 20 everywhere. If it does not, that row is not"
+        echo "  comparable."
+    fi
     echo "* Query _count_ is an ORM property, not a language property: Hibernate's entity graph"
     echo "  resolves the nested parent in one join, while Prisma, Django and SeaORM issue a second"
     echo "  query for it. That shows up here as a framework difference."
     echo "* Only one server runs at a time, and each container is removed before the next starts."
-    echo "* \`ab\` is a single-threaded, non-keepalive load generator. At c=1000+ it is often the"
-    echo "  bottleneck rather than the server, which is why the high-concurrency columns compress."
+    if [ "$LOADGEN" = k6 ]; then
+        echo "* k6 is multi-threaded and runs in its own container pinned to the cores the server is"
+        echo "  not using, so it is far less likely to be the bottleneck than \`ab\` was."
+    else
+        echo "* \`ab\` is a single-threaded, non-keepalive load generator. At c=1000+ it is often the"
+        echo "  bottleneck rather than the server, which is why the high-concurrency columns compress."
+    fi
     echo "* Peak RSS is the container's cgroup \`memory.peak\`, so it includes the runtime, not just"
     echo "  the heap."
     echo "* Raw ab output per level is under \`$(basename "$LOGDIR")/\`."
