@@ -12,18 +12,6 @@ import lombok.Setter;
 @AllArgsConstructor
 @Getter
 @Setter
-@NamedEntityGraph(
-    name = "Content.withCategory",
-    attributeNodes = {
-        @NamedAttributeNode(value = "category", subgraph = "Category.withParent")
-    },
-    subgraphs = @NamedSubgraph(
-        name = "Category.withParent",
-        attributeNodes = {
-            @NamedAttributeNode("parent")
-        }
-    )
-)
 public class Content {
 
     @Id

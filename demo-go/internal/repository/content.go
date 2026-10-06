@@ -16,10 +16,11 @@ func NewContentRepository(db *gorm.DB) *ContentRepository {
 	return &ContentRepository{db: db}
 }
 
-// withCategory loads content -> category -> parent. Preload issues one batched IN query
-// per level, so a page costs three statements and no COUNT(*).
+// withCategory loads content -> category -> parent -> grandparent, the full chain for the
+// 3-level category tree. Preload issues one batched IN query per level, so a page costs four
+// statements and no COUNT(*).
 func (r *ContentRepository) withCategory(ctx context.Context) *gorm.DB {
-	return r.db.WithContext(ctx).Preload("Category").Preload("Category.Parent")
+	return r.db.WithContext(ctx).Preload("Category.Parent.Parent")
 }
 
 func (r *ContentRepository) FindPage(ctx context.Context, offset, limit int) ([]model.Content, error) {

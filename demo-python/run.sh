@@ -37,7 +37,7 @@ case "${1:-start}" in
         ;;
     start)
         cd "$HERE"
-        exec "$VENV/bin/gunicorn" mysite.wsgi:application \
+        DEMO_DB="$DEMO_DB" exec "$VENV/bin/gunicorn" mysite.wsgi:application \
             --bind "0.0.0.0:$PORT" \
             --workers "$WORKERS" \
             --log-level error

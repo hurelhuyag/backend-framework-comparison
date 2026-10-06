@@ -16,6 +16,24 @@ COPY demo-php/ ./
 # .env and a PHP runtime that this stage does not have. It is run in the final image instead.
 RUN composer dump-autoload --optimize --no-dev --classmap-authoritative --no-scripts
 
+# Test stage: `docker build -f demo-php/Dockerfile --target test .` then `docker run --rm <image>`.
+# A plain build never reaches it (the final stage does not depend on it). Dev dependencies are
+# installed here, inside the build; the tests read their own copy of demo.sqlite at /repo/demo.sqlite
+# (= ../demo.sqlite from the app) and copy it again to a temp file per test.
+FROM php:8.4-cli-bookworm AS test
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git unzip \
+    && rm -rf /var/lib/apt/lists/*
+RUN php -m | grep -qi '^pdo_sqlite$'
+WORKDIR /repo/demo-php
+COPY demo-php/composer.json demo-php/composer.lock ./
+RUN composer install --no-interaction --no-scripts --no-autoloader --prefer-dist
+COPY demo-php/ ./
+RUN composer dump-autoload --no-scripts
+COPY demo.sqlite /repo/demo.sqlite
+CMD ["vendor/bin/phpunit", "--colors=never", "--testdox"]
+
 FROM php:8.4-fpm-bookworm
 RUN apt-get update \
     && apt-get install -y --no-install-recommends nginx libsqlite3-dev \

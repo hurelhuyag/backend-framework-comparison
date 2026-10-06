@@ -1,16 +1,16 @@
 package io.github.hurelhuyag.demohibernatesqlite.business;
 
-import io.github.hurelhuyag.demohibernatesqlite.models.Content;
+import io.github.hurelhuyag.demohibernatesqlite.views.ContentView;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 
-import java.util.Optional;
-
 public interface ContentService {
 
-    Slice<Content> findAll(Pageable pageable);
+    Slice<ContentView> findAll(Pageable pageable);
 
-    Optional<Content> findById(Long id);
+    /// @throws ContentNotFoundException when no content has this id
+    ContentView findById(Long id);
 
-    Optional<Content> updateText(Long id, String text);
+    /// @throws ContentNotFoundException when no content has this id
+    ContentView updateText(Long id, String text);
 }

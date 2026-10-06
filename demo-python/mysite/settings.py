@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -20,12 +21,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-f5w^9h1$jl^+a4!93v9#p_)fq(l^l%u65s(9bzxpmk0^1r=v_3'
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-f5w^9h1$jl^+a4!93v9#p_)fq(l^l%u65s(9bzxpmk0^1r=v_3')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DJANGO_DEBUG', 'false').lower() in ('1', 'true', 'yes')
 
-ALLOWED_HOSTS = []
+# Comma-separated. The default covers run.sh and the Docker port mapping (benchmarks hit 127.0.0.1).
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,[::1]').split(',') if h.strip()]
 
 
 # Application definition
@@ -77,7 +79,7 @@ WSGI_APPLICATION = 'mysite.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'demo.sqlite',
+        'NAME': os.environ.get('DEMO_DB', BASE_DIR / 'demo.sqlite'),
     }
 }
 
@@ -123,8 +125,24 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-DEBUG = False
-ALLOWED_HOSTS = ['yourdomain.com', '127.0.0.1']  # production hosts
-import os
-SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'replace-with-secure-key')
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+REST_FRAMEWORK = {
+    'EXCEPTION_HANDLER': 'core.exceptions.api_exception_handler',
+}
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler'},
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': os.environ.get('DJANGO_LOG_LEVEL', 'WARNING'),
+    },
+    'loggers': {
+        # django.request logs every 4xx as a WARNING; client errors are not server problems.
+        'django.request': {'level': 'ERROR'},
+    },
+}

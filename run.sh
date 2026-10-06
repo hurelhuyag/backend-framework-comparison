@@ -136,7 +136,7 @@ fi
 # Random ids for the item endpoint are drawn from 1..MAX_ID.
 MAX_ID="${MAX_ID:-$(python3 -I -c "
 import sqlite3,sys
-print(sqlite3.connect(sys.argv[1]).execute('select max(id) from content').fetchone()[0])
+print(sqlite3.connect('file:' + sys.argv[1] + '?immutable=1', uri=True).execute('select max(id) from content').fetchone()[0])
 " "$DEMO_DB" 2>/dev/null || echo 10000)}"
 if [ "$MODE" = docker ]; then
     command -v docker >/dev/null 2>&1 || { echo "docker is required for --docker mode" >&2; exit 1; }
@@ -263,16 +263,24 @@ declare -A RPS SKIPPED ROWS BYTES NOTE IMGSIZE BOOTMS BUILDS PEAKMEM P50 P95 P99
 if [ "$MODE" = docker ]; then
     echo "mode=docker  cpus=$CPUS (cpuset $SERVER_CPUS)  memory=$MEMORY  ab on cpus=${LOAD_CPUS:-all}"
 else
-    python3 -I -c "
-import sqlite3,sys
-c = sqlite3.connect(sys.argv[1]); c.execute('pragma journal_mode=' + sys.argv[2])
-print('mode=native  db journal_mode=' + c.execute('pragma journal_mode').fetchone()[0]); c.close()
-" "$DEMO_DB" "$JOURNAL" 2>/dev/null || echo "mode=native"
+    echo "mode=native  each framework gets a fresh copy of $(basename "$DEMO_DB") (journal_mode=$JOURNAL)"
 fi
 echo "requests=-n $REQUESTS  levels=-c $LEVELS"
 echo
 
 cleanup_docker() { docker rm -f "bfc-$1" >/dev/null 2>&1 || true; }
+
+# Native mode: like a fresh container, every framework starts from its own copy of the dataset,
+# so benchmark writes never reach the repo's demo.sqlite or the next framework.
+fresh_db() {
+    rm -f "$1" "$1-wal" "$1-shm"
+    cp "$DEMO_DB" "$1"
+    python3 -I -c "
+import sqlite3,sys
+sqlite3.connect(sys.argv[1]).execute('pragma journal_mode=' + sys.argv[2]).close()
+" "$1" "$JOURNAL"
+}
+drop_db() { rm -f "$1" "$1-wal" "$1-shm"; }
 
 for i in "${!NAMES[@]}"; do
     name="${NAMES[$i]}"; dir="${DIRS[$i]}"; port="${PORTS[$i]}"; bpath="${PATHS[$i]}"
@@ -353,7 +361,8 @@ for i in "${!NAMES[@]}"; do
                 echo "    SKIP - ${SKIPPED[$name]}"; echo; continue
             }
     else
-        setsid bash "$dir/run.sh" start >"$log.server.log" 2>&1 &
+        fresh_db "$log.sqlite"
+        DEMO_DB="$log.sqlite" setsid bash "$dir/run.sh" start >"$log.server.log" 2>&1 &
         pgid=$!
     fi
 
@@ -378,6 +387,7 @@ for i in "${!NAMES[@]}"; do
         else
             tail -8 "$log.server.log" | sed 's/^/      /'
             kill -TERM -"$pgid" 2>/dev/null; sleep 1; kill -KILL -"$pgid" 2>/dev/null
+            drop_db "$log.sqlite"
         fi
         wait_for_port_free "$hostport"
         echo; continue
@@ -492,6 +502,7 @@ print(fmt(d.get('rps')), fmt(d.get('failed_rate')), fmt(d.get('p50')), fmt(d.get
         cleanup_docker "$name"
     else
         kill -TERM -"$pgid" 2>/dev/null; sleep 1; kill -KILL -"$pgid" 2>/dev/null
+        drop_db "$log.sqlite"
     fi
     wait_for_port_free "$hostport" || echo "    warn: host port $hostport still busy"
     echo
@@ -666,10 +677,10 @@ stale=0
         echo "database    demo.sqlite copied into each image (no shared file between runs)"
         echo "            journal_mode=$(python3 -I -c "
 import sqlite3,sys
-print(sqlite3.connect(sys.argv[1]).execute('pragma journal_mode').fetchone()[0])
+print(sqlite3.connect('file:' + sys.argv[1] + '?immutable=1', uri=True).execute('pragma journal_mode').fetchone()[0])
 " "$DEMO_DB" 2>/dev/null || echo '?') - identical for every framework"
     else
-        echo "database    $DEMO_DB (journal_mode=$JOURNAL)"
+        echo "database    fresh copy of $DEMO_DB per framework (journal_mode=$JOURNAL)"
     fi
     if [ "$LOADGEN" = k6 ]; then
         echo "load        $K6_IMAGE, mixed read suite (bench/mixed.js)"
@@ -796,9 +807,11 @@ print(sqlite3.connect(sys.argv[1]).execute('pragma journal_mode').fetchone()[0])
         echo "  query, so the Rows column should read 20 everywhere. If it does not, that row is not"
         echo "  comparable."
     fi
-    echo "* Query _count_ is an ORM property, not a language property: Hibernate's entity graph"
-    echo "  resolves the nested parent in one join, while Prisma, Django and SeaORM issue a second"
-    echo "  query for it. That shows up here as a framework difference."
+    echo "* Every nested category carries its full parent chain (3 levels). Query _count_ is an ORM"
+    echo "  property, not a language property: Hibernate (join fetch), EF Core (ThenInclude) and"
+    echo "  Django (select_related) load a page in one joined statement, while GORM, Prisma, Eloquent"
+    echo "  and SeaORM issue one batched IN query per level, up to 4 statements. That shows up here"
+    echo "  as a framework difference."
     echo "* Only one server runs at a time, and each container is removed before the next starts."
     if [ "$LOADGEN" = k6 ]; then
         echo "* k6 is multi-threaded and runs in its own container pinned to the cores the server is"

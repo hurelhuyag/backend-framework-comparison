@@ -6,8 +6,9 @@ namespace DemoDotnet.Repositories;
 
 internal sealed class ContentRepository(DemoContext db) : IContentRepository
 {
-    // Include + ThenInclude resolves content -> category -> parent in ONE statement with two
-    // LEFT JOINs, because EF Core aliases the self-referencing join. No COUNT(*) is issued.
+    // Include + ThenInclude resolves content -> category -> parent -> grandparent (the full chain of
+    // the 3-level category tree) in ONE statement with three LEFT JOINs, because EF Core aliases the
+    // self-referencing joins. No COUNT(*) is issued.
     public async Task<IReadOnlyList<Content>> ListAsync(
         int skip,
         int take,
@@ -16,6 +17,7 @@ internal sealed class ContentRepository(DemoContext db) : IContentRepository
             .AsNoTracking()
             .Include(content => content.Category!)
             .ThenInclude(category => category.Parent)
+            .ThenInclude(parent => parent!.Parent)
             .OrderBy(content => content.Id)
             .Skip(skip)
             .Take(take)
@@ -26,6 +28,7 @@ internal sealed class ContentRepository(DemoContext db) : IContentRepository
             .AsNoTracking()
             .Include(content => content.Category!)
             .ThenInclude(category => category.Parent)
+            .ThenInclude(parent => parent!.Parent)
             .FirstOrDefaultAsync(content => content.Id == id, cancellationToken);
 
     // Tracked, because the service mutates and saves it.

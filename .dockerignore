@@ -10,3 +10,8 @@
 demo.sqlite-shm
 demo.sqlite-wal
 result.png
+demo-dotnet/bin
+demo-dotnet/obj
+demo-dotnet/publish
+demo-dotnet/tests/bin
+demo-dotnet/tests/obj

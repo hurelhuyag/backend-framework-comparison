@@ -13,3 +13,5 @@ demo-php/.env
 demo-python/.venv/
 demo-python/demo.sqlite
 demo-rust/target/
+__pycache__/
+*.pyc

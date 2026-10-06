@@ -2,16 +2,18 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-use App\Models\Category;
-use Illuminate\Http\JsonResponse;
-
+use App\Http\Resources\CategoryResource;
+use App\Services\CategoryService;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class CategoryController extends Controller
 {
-    public function index(): JsonResponse
+    public function __construct(private readonly CategoryService $categories)
     {
-	$categories = Category::with('parent')->get();
-        return response()->json($categories);
+    }
+
+    public function index(): AnonymousResourceCollection
+    {
+        return CategoryResource::collection($this->categories->all());
     }
 }

@@ -4,6 +4,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
+DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
 
 NATIVE="${NATIVE:-0}"
 NAME="${NAME:-java}"
@@ -40,14 +41,13 @@ case "${1:-start}" in
         fi
         ;;
     start)
-        # application.properties uses jdbc:sqlite:demo.sqlite (relative), so start from the repo root.
         cd "$ROOT"
         if [ "$NATIVE" = "1" ]; then
-            exec "$HERE/target/demo-hibernate-sqlite" --server.port="$PORT"
+            exec "$HERE/target/demo-hibernate-sqlite" --server.port="$PORT" --spring.datasource.url="jdbc:sqlite:$DEMO_DB"
         fi
         jar="$(ls -1 "$HERE"/target/*.jar 2>/dev/null | grep -v '\.original$' | head -1)"
         [ -n "$jar" ] || { echo "no jar in $HERE/target - run './run.sh build'" >&2; exit 1; }
-        exec java $JAVA_OPTS -jar "$jar" --server.port="$PORT"
+        exec java $JAVA_OPTS -jar "$jar" --server.port="$PORT" --spring.datasource.url="jdbc:sqlite:$DEMO_DB"
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2

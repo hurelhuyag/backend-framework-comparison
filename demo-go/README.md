@@ -27,3 +27,13 @@ Environment: `PORT` (8080), `DEMO_DB` (demo.sqlite), `LOG_LEVEL` (WARN; DEBUG en
 CGO_ENABLED=1 go build -ldflags="-s -w" -o myapp ./cmd/server
 ./myapp
 ```
+
+## Tests
+
+`internal/handler/endpoints_test.go` drives every endpoint through the real router, services and
+repositories against a fresh SQLite file per test (the shared fixture, never `demo.sqlite`), and
+compares each response body as a whole JSON document.
+
+```sh
+go test ./...
+```

@@ -28,3 +28,6 @@ app.UseMiddleware<ExceptionHandlingMiddleware>();
 app.MapControllers();
 
 app.Run();
+
+// Lets the endpoint tests (tests/) reference this entry point via WebApplicationFactory<Program>.
+public partial class Program { }

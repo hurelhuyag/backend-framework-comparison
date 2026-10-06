@@ -2,48 +2,37 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Content;
-use Illuminate\Http\Request;
+use App\Http\Requests\ListContentsRequest;
+use App\Http\Requests\UpdateContentRequest;
+use App\Http\Resources\ContentResource;
+use App\Services\ContentService;
 use Illuminate\Http\JsonResponse;
-
 
 class ContentController extends Controller
 {
-    public function index(Request $request): JsonResponse
+    public function __construct(private readonly ContentService $contents)
     {
-        $page = (int) $request->query('page', '1');
-        $perPage = (int) $request->query('page_size', '10');
+    }
 
-        // Eager load category to avoid N+1
-        $contents = Content::with('category.parent')
-            ->skip(($page - 1) * $perPage)
-            ->take($perPage)
-            ->get();
+    public function index(ListContentsRequest $request): JsonResponse
+    {
+        $page = $request->page();
+        $pageSize = $request->pageSize();
 
         return response()->json([
             'page' => $page,
-            'page_size' => $perPage,
-            'data' => $contents,
+            'page_size' => $pageSize,
+            'data' => ContentResource::collection($this->contents->paginate($page, $pageSize)),
         ]);
     }
 
-    public function show(int $id): JsonResponse
+    public function show(int $id): ContentResource
     {
-        $content = Content::with('category.parent')->findOrFail($id);
-        return response()->json($content);
+        return new ContentResource($this->contents->find($id));
     }
 
-    // Rewrites only the text, so the row count never changes and reads stay comparable.
-    public function update(Request $request, int $id): JsonResponse
+    public function update(UpdateContentRequest $request, int $id): ContentResource
     {
-        $validated = $request->validate([
-            'content' => ['required', 'string', 'max:1000'],
-        ]);
-
-        $content = Content::findOrFail($id);
-        $content->content = $validated['content'];
-        $content->save();
-
-        return response()->json($content);
+        return new ContentResource($this->contents->updateText($id, $request->text()));
     }
 }

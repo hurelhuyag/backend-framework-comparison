@@ -6,6 +6,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
+DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
 
 NAME="${NAME:-graalvm}"
 STACK="${STACK:-GraalVM-JDK25/Spring4.1/Hibernate7 (native)}"
@@ -36,9 +37,8 @@ case "${1:-start}" in
         cp "$SRC/target/demo-hibernate-sqlite" "$APP"
         ;;
     start)
-        # application.properties uses jdbc:sqlite:demo.sqlite (relative), so start from the repo root.
         cd "$ROOT"
-        exec "$APP" --server.port="$PORT"
+        exec "$APP" --server.port="$PORT" --spring.datasource.url="jdbc:sqlite:$DEMO_DB"
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2

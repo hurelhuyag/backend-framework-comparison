@@ -7,6 +7,18 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && r
 COPY demo-rust/src ./src
 RUN touch src/main.rs && cargo build --release
 
+# Endpoint tests: ./test.sh rust (from the repo root). Never built by a plain `docker build`.
+# Laid out as /repo/demo-rust with the DB at /repo/demo.sqlite, so the tests' ../demo.sqlite resolves
+# to this image's own copy. Tests are compiled here and run by CMD, so the exit code is the result.
+FROM rust:1-slim-bookworm AS test
+WORKDIR /repo/demo-rust
+COPY demo-rust/Cargo.toml demo-rust/Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo test --no-run && rm -rf src
+COPY demo-rust/src ./src
+RUN touch src/main.rs && cargo test --no-run
+COPY demo.sqlite /repo/demo.sqlite
+CMD ["cargo", "test"]
+
 FROM debian:bookworm-slim
 WORKDIR /app/demo-rust
 COPY demo-rust/run.sh ./run.sh

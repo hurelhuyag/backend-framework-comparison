@@ -19,7 +19,7 @@ func NewCategoryRepository(db *gorm.DB) *CategoryRepository {
 func (r *CategoryRepository) FindAll(ctx context.Context) ([]model.Category, error) {
 	var categories []model.Category
 	err := r.db.WithContext(ctx).
-		Preload("Parent").
+		Preload("Parent.Parent").
 		Order("id").
 		Find(&categories).Error
 	return categories, err

@@ -14,12 +14,6 @@ import java.util.List;
 @AllArgsConstructor
 @Getter
 @Setter
-@NamedEntityGraph(
-    name = "Category.withParent",
-    attributeNodes = {
-        @NamedAttributeNode("parent")
-    }
-)
 public class Category {
 
     @Id

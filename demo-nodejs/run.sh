@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Node / NextJS / Prisma. DATABASE_URL is forced to the repo-root demo.sqlite so this
+# Node / NestJS (Express) / Prisma. DATABASE_URL is forced to the repo-root demo.sqlite so this
 # does not depend on the absolute path baked into .env.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 
 NAME="${NAME:-nodejs}"
-STACK="${STACK:-Node/NextJS/Prisma}"
+STACK="${STACK:-Node/NestJS/Prisma}"
 PORT="${PORT:-3000}"
 BENCH_PATH="${BENCH_PATH:-/api/contents?pageSize=20}"
 LIST_PATH="${LIST_PATH-}"
@@ -31,11 +31,12 @@ case "${1:-start}" in
         cd "$HERE"
         npm install --no-audit --no-fund
         npx prisma generate
-        NODE_ENV=production npm run build
+        npm run build
         ;;
     start)
         cd "$HERE"
-        exec npx next start -p "$PORT"
+        export PORT
+        exec node dist/main.js
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2

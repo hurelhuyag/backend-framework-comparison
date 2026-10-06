@@ -37,17 +37,19 @@ Mounted at both `/...` and `/api/...`.
 |---|---|---|
 | GET | `/contents` | `?page=1&size=20`, also accepts `page_size` / `pageSize` |
 | GET | `/contents/{id}` | 404 when missing |
-| GET | `/categories` | all 110 rows, each with its parent |
+| GET | `/categories` | all 100 rows, each with its full parent chain |
 
 Defaults match the Django/NextJS demos: page 1, size 20, capped at 100. Ordered by `id ASC`, and no
 `COUNT(*)` is issued.
 
 ## Notes for a fair reading of the numbers
 
-- **One query per request.** `Include(...).ThenInclude(...)` resolves `content -> category -> parent`
-  in a single SQL statement with two `LEFT JOIN`s, because EF Core aliases the self-referencing join.
-  This matches Hibernate's `@NamedEntityGraph` and is *better* than the Rust/Prisma/Django demos,
-  which issue a second query for the nested parent. That is an ORM capability difference, not a
+- **One query per request.** Every nested category carries its parent chain up to the root. The
+  category tree is 3 levels deep, so `Include(...).ThenInclude(...).ThenInclude(...)` resolves
+  `content -> category -> parent -> grandparent` in a single SQL statement with three `LEFT JOIN`s
+  (`/categories`: one statement, two `LEFT JOIN`s), because EF Core aliases the self-referencing joins.
+  This matches Hibernate's `@NamedEntityGraph` and is *better* than demos that issue extra queries
+  for the nested parents. That is an ORM capability difference, not a
   language one.
 - **`AsNoTracking()`** is set, matching the read-only intent of the endpoint (Hibernate uses a
   read-only transaction; Prisma and Django do not track either).
@@ -55,3 +57,22 @@ Defaults match the Django/NextJS demos: page 1, size 20, capped at 100. Ordered 
   default — comparable to Hikari in the Spring demo and the SeaORM pool in the Rust demo.
 - **Logging is pinned to Warning.** ASP.NET Core logs every request at Information by default, which
   would charge this row for work no other demo does.
+
+## Tests
+
+`tests/` is a separate xUnit project (excluded from the main build) that boots the app in-process with
+`WebApplicationFactory<Program>`. It holds the same 16 endpoint cases as every other demo, each with its
+full expected JSON inline.
+
+Run them from the repo root:
+
+```sh
+./test.sh dotnet
+```
+
+This builds the `test` stage of the `Dockerfile` (`--target test`; a plain build skips it) and runs it.
+The stage copies `demo.sqlite` (built by `db/generate.sql`) into the image, and before every test the
+factory copies it again to a temp file that `DEMO_DB` points to, so no run touches the repo's database
+or shares one with another demo. The container's exit code is the test result.
+
+With a local .NET 10 SDK: `cd demo-dotnet/tests && dotnet test` (uses the repo-root `demo.sqlite` the same way).

@@ -3,6 +3,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
+DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
 
 NAME="${NAME:-go}"
 STACK="${STACK:-Go/Gin/Gorm}"
@@ -27,9 +28,8 @@ case "${1:-start}" in
         cd "$HERE" && CGO_ENABLED=1 go build -ldflags="-s -w" -o myapp ./cmd/server
         ;;
     start)
-        # DEMO_DB defaults to "demo.sqlite" relative to the cwd, so start from the repo root.
         cd "$ROOT"
-        PORT="$PORT" exec "$HERE/myapp"
+        DEMO_DB="$DEMO_DB" PORT="$PORT" exec "$HERE/myapp"
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2

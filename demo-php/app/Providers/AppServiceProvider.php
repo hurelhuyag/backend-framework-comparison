@@ -2,29 +2,19 @@
 
 namespace App\Providers;
 
-use Illuminate\Support\Facades\Route;
+use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
-    /**
-     * Register any application services.
-     */
     public function register(): void
     {
         //
     }
 
-    /**
-     * Bootstrap any application services.
-     */
     public function boot(): void
     {
-        Route::middleware('api')
-            ->prefix('api')
-            ->group(base_path('routes/api.php'));
-
-        Route::middleware('web')
-            ->group(base_path('routes/web.php'));
+        // Single resources are returned as the bare object, not wrapped in {"data": ...}.
+        JsonResource::withoutWrapping();
     }
 }
