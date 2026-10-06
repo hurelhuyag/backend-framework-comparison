@@ -28,4 +28,14 @@ public class SimpleContentService implements ContentService {
     public Optional<Content> findById(Long id) {
         return contentRepo.findDetail(id);
     }
+
+    // Rewrites only the text, so the row count never changes and reads stay comparable.
+    // Hibernate dirty-checking flushes the change when the transaction commits.
+    @Override
+    public Optional<Content> updateText(Long id, String text) {
+        return contentRepo.findById(id).map(content -> {
+            content.setContent(text);
+            return content;
+        });
+    }
 }

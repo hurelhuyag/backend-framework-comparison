@@ -8,7 +8,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 
 NAME="${NAME:-graalvm}"
-STACK="${STACK:-GraalVM25/Spring4.1/Hibernate7 (native)}"
+STACK="${STACK:-GraalVM-JDK25/Spring4.1/Hibernate7 (native)}"
 PORT="${PORT:-8083}"
 BENCH_PATH="${BENCH_PATH:-/contents?size=20}"
 LIST_PATH="${LIST_PATH-}"
@@ -32,7 +32,7 @@ case "${1:-start}" in
     build)
         # -Pnative comes from spring-boot-starter-parent; this pom defines no profiles itself.
         cd "$SRC"
-        mvn -B -DskipTests -Pnative clean package native:compile
+        mvn -B -DskipTests -Djava.version=25 -Pnative clean package native:compile
         cp "$SRC/target/demo-hibernate-sqlite" "$APP"
         ;;
     start)

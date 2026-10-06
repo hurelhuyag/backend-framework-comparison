@@ -9,8 +9,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use sea_orm::{
-    ColumnTrait, ConnectOptions, Database, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder,
-    QuerySelect,
+    ActiveModelTrait, ColumnTrait, ConnectOptions, Database, DatabaseConnection, DbErr, EntityTrait,
+    IntoActiveModel, QueryFilter, QueryOrder, QuerySelect, Set,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,11 @@ impl Pagination {
         let size = self.size.filter(|size| *size > 0).unwrap_or(20).min(100);
         (page, size)
     }
+}
+
+#[derive(Deserialize)]
+struct ContentUpdate {
+    content: String,
 }
 
 #[derive(Serialize)]
@@ -70,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Mounted twice so both `ab` command shapes in the repo README work: /contents and /api/contents.
     let routes = Router::new()
         .route("/contents", get(get_contents))
-        .route("/contents/{id}", get(get_content))
+        .route("/contents/{id}", get(get_content).put(update_content))
         .route("/categories", get(get_categories));
     let app = Router::new()
         .merge(routes.clone())
@@ -153,6 +158,28 @@ async fn get_content(State(state): State<AppState>, Path(id): Path<i32>) -> Resu
                 })
             }),
         }),
+    }))
+}
+
+async fn update_content(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    Json(body): Json<ContentUpdate>,
+) -> Result<Json<ContentView>, AppError> {
+    let content = content::Entity::find_by_id(id)
+        .one(&state.db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let mut active = content.into_active_model();
+    active.content = Set(body.content);
+    let content = active.update(&state.db).await?;
+
+    Ok(Json(ContentView {
+        id: content.id,
+        category_id: content.category_id,
+        content: content.content,
+        category: None,
     }))
 }
 

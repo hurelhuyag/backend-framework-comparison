@@ -23,6 +23,7 @@
 #   ./run.sh --list                    show what was discovered
 #   ./run.sh --report-only             rebuild the report from stored results, measure nothing
 #   ./run.sh --loadgen ab              single-URL ab instead of the mixed k6 suite
+#   ./run.sh --no-tag                  skip creating the bench/<date>-<n> git tag
 #
 set -uo pipefail
 # Deterministic numeric formatting: under a comma-decimal locale, awk parses "12345.67"
@@ -49,6 +50,7 @@ DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
 ONLY=""
 DO_BUILD=1
 LIST_ONLY=0
+DO_TAG=1
 
 NCPU="$(nproc)"
 SERVER_CPUS="${SERVER_CPUS:-}"
@@ -106,6 +108,7 @@ while [ $# -gt 0 ]; do
         --load-cpus) LOAD_CPUS="$2"; shift 2 ;;
         --journal) JOURNAL="$2"; shift 2 ;;
         --loadgen) LOADGEN="$2"; shift 2 ;;
+        --no-tag) DO_TAG=0; shift ;;
         --list) LIST_ONLY=1; shift ;;
         --report-only) ONLY="__none__"; DO_BUILD=0; shift ;;
         -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
@@ -146,6 +149,25 @@ else
     LIMITS_DESC="native, unconstrained"
 fi
 
+# Derived from bench/mixed.js so the report cannot claim a mix the results were not run under.
+if [ "$LOADGEN" = k6 ] && [ -f "$K6_SCRIPT" ]; then
+    MIX_DESC="$(python3 -I -c "
+import re, sys
+src = open(sys.argv[1]).read()
+parts = []
+for weight, body in re.findall(r'\{\s*weight:\s*(\d+)\s*,([^}]*)\}', src):
+    kind = re.search(r\"kind:\s*'([a-z]+)'\", body)
+    size = re.search(r'size:\s*(\d+)', body)
+    label = kind.group(1) if kind else '?'
+    if size:
+        label += ' size=' + size.group(1)
+    parts.append(weight + '% ' + label)
+print(' | '.join(parts))
+" "$K6_SCRIPT" 2>/dev/null || echo "?")"
+else
+    MIX_DESC="single URL"
+fi
+
 AB=(ab)
 if [ -n "$LOAD_CPUS" ] && command -v taskset >/dev/null 2>&1; then
     AB=(taskset -c "$LOAD_CPUS" ab)
@@ -153,6 +175,13 @@ fi
 
 mkdir -p "$LOGDIR" "$RESULTDIR"
 LOADAVG_START="$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo '?')"
+GIT_COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')"
+GIT_BRANCH="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+if git -C "$ROOT" diff --quiet 2>/dev/null && git -C "$ROOT" diff --cached --quiet 2>/dev/null; then
+    GIT_DIRTY=""
+else
+    GIT_DIRTY=" (uncommitted changes present)"
+fi
 ulimit -n 65535 2>/dev/null || true
 
 port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
@@ -371,6 +400,7 @@ for i in "${!NAMES[@]}"; do
                     -e LIST_PATH="${LISTPATHS[$i]}" \
                     -e ITEM_PATH="${ITEMPATHS[$i]}" \
                     -e CATEGORIES_PATH="${CATPATHS[$i]}" \
+                    -e WRITE_PATH="${ITEMPATHS[$i]}" \
                     -e MAX_ID="$MAX_ID" \
                     "$K6_IMAGE" run --quiet --vus "$c" --iterations "$REQUESTS" /mix.js \
                     >"$out" 2>&1; then
@@ -442,6 +472,7 @@ print(fmt(d.get('rps')), fmt(d.get('failed_rate')), fmt(d.get('p50')), fmt(d.get
         echo "WHEN=$(date -Is)"
         echo "MODE=$MODE"
         echo "LIMITS=$LIMITS_DESC"
+        echo "MIX=$MIX_DESC"
         echo "REQUESTS=$REQUESTS"
         echo "LEVELS=$LEVELS"
         echo "LOADGEN=$LOADGEN"
@@ -591,6 +622,7 @@ emit_environment() {
     echo
     echo '[source]'
     echo '----'
+    echo "commit       $GIT_COMMIT on $GIT_BRANCH$GIT_DIRTY"
     echo "load avg     $LOADAVG_START at start -> $(cut -d' ' -f1-3 /proc/loadavg) at end"
     echo "repetitions  1 per level (no median of repeats)"
     echo "isolation    one server at a time, container removed before the next starts"
@@ -605,6 +637,18 @@ human() { [ -n "${1:-}" ] && awk -v b="$1" 'BEGIN{printf "%.0f MiB", b/1048576}'
 getf() { sed -n "s/^$2=//p" "$RESULTDIR/$1.env" 2>/dev/null | head -1; }
 
 colspec="<28"; for c in $LEVELS; do colspec="$colspec,>10"; done
+NLEVELS=0; for c in $LEVELS; do NLEVELS=$((NLEVELS + 1)); done
+
+# Two-row header: "Concurrent connections" spanning the level columns, then the levels.
+level_header() {
+    echo "[cols=\"$colspec\"]"
+    echo '|==='
+    echo "| ${NLEVELS}+^h| Concurrent connections"
+    printf 'h| %s' "$1"
+    for c in $LEVELS; do printf ' ^h| %s' "$c"; done
+    echo
+    echo
+}
 stale=0
 
 {
@@ -629,8 +673,8 @@ print(sqlite3.connect(sys.argv[1]).execute('pragma journal_mode').fetchone()[0])
     fi
     if [ "$LOADGEN" = k6 ]; then
         echo "load        $K6_IMAGE, mixed read suite (bench/mixed.js)"
-        echo "mix         55% list size=20 | 15% list size=1 | 10% list size=100"
-        echo "            15% item by random id 1..$MAX_ID | 5% categories"
+        echo "mix         $MIX_DESC"
+        echo "            item/write ids drawn at random from 1..$MAX_ID"
     else
         echo "load        ab $(ab -V 2>&1 | sed -n 's/.*Version \([0-9.]*\).*/\1/p' | head -1), single URL"
     fi
@@ -641,10 +685,7 @@ print(sqlite3.connect(sys.argv[1]).execute('pragma journal_mode').fetchone()[0])
     emit_environment
     echo '== Requests per second'
     echo
-    echo "[cols=\"$colspec\",options=\"header\"]"
-    echo '|==='
-    printf '| Platform'; for c in $LEVELS; do printf ' | %s' "$c"; done; echo
-    echo
+    level_header 'Platform'
     for i in "${!NAMES[@]}"; do
         name="${NAMES[$i]}"
         [ -f "$RESULTDIR/$name.env" ] || continue
@@ -658,10 +699,7 @@ print(sqlite3.connect(sys.argv[1]).execute('pragma journal_mode').fetchone()[0])
     if [ "$(getf "${NAMES[0]}" LOADGEN)" = k6 ] || [ "$LOADGEN" = k6 ]; then
         echo '== Latency p95 (ms, lower is better)'
         echo
-        echo "[cols=\"$colspec\",options=\"header\"]"
-        echo '|==='
-        printf '| Platform'; for c in $LEVELS; do printf ' | %s' "$c"; done; echo
-        echo
+        level_header 'Platform'
         for i in "${!NAMES[@]}"; do
             name="${NAMES[$i]}"
             [ -f "$RESULTDIR/$name.env" ] || continue
@@ -692,6 +730,7 @@ print(sqlite3.connect(sys.argv[1]).execute('pragma journal_mode').fetchone()[0])
         when="$(getf "$name" WHEN)"
         [ "$(getf "$name" LIMITS)" = "$LIMITS_DESC" ] || stale=1
         [ "$(getf "$name" LOADGEN)" = "$LOADGEN" ] || stale=1
+        [ "$(getf "$name" MIX)" = "$MIX_DESC" ] || stale=1
         printf '| %s | `%s` | %s | %s | %s | %s | %s | %s | %s\n' \
             "$(getf "$name" STACK)" "$(getf "$name" BPATH)" \
             "$(getf "$name" ROWS)" "$(getf "$name" BYTES)" \
@@ -795,6 +834,30 @@ _, _, tail = rest.partition(end)
 readme.write_text(f"{head}{begin}\n{body}\n{end}{tail}")
 print(f"report embedded into {readme}")
 INJECT
+fi
+
+# Tag the run so every published result set is reachable from git history. A dirty tree is
+# refused rather than tagged, because the tag would not reproduce the numbers.
+if [ "$DO_TAG" -eq 1 ] && [ "$ONLY" != "__none__" ] && git -C "$ROOT" rev-parse HEAD >/dev/null 2>&1; then
+    if [ -n "$GIT_DIRTY" ]; then
+        echo "not tagging: working tree is dirty - commit first, then ./run.sh --report-only"
+    else
+        day="$(date +%Y-%m-%d)"
+        n=1
+        while git -C "$ROOT" rev-parse -q --verify "refs/tags/bench/$day-$n" >/dev/null 2>&1; do
+            n=$((n + 1))
+        done
+        tag="bench/$day-$n"
+        if git -C "$ROOT" tag -a "$tag" -m "Benchmark run $n ($day)
+
+load generator: $LOADGEN
+limits: $LIMITS_DESC
+requests: -n $REQUESTS per level
+levels: -c $LEVELS
+commit: $GIT_COMMIT on $GIT_BRANCH" 2>/dev/null; then
+            echo "tagged $tag"
+        fi
+    fi
 fi
 
 echo "report written to $REPORT"

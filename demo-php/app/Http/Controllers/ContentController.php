@@ -32,4 +32,18 @@ class ContentController extends Controller
         $content = Content::with('category.parent')->findOrFail($id);
         return response()->json($content);
     }
+
+    // Rewrites only the text, so the row count never changes and reads stay comparable.
+    public function update(Request $request, int $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'content' => ['required', 'string', 'max:1000'],
+        ]);
+
+        $content = Content::findOrFail($id);
+        $content->content = $validated['content'];
+        $content->save();
+
+        return response()->json($content);
+    }
 }

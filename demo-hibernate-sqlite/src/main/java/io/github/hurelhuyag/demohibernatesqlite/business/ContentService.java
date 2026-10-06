@@ -11,4 +11,6 @@ public interface ContentService {
     Slice<Content> findAll(Pageable pageable);
 
     Optional<Content> findById(Long id);
+
+    Optional<Content> updateText(Long id, String text);
 }

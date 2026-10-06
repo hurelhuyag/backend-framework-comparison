@@ -10,6 +10,10 @@ const LIST_PATH = __ENV.LIST_PATH;
 const ITEM_PATH = __ENV.ITEM_PATH;
 const CATEGORIES_PATH = __ENV.CATEGORIES_PATH;
 const MAX_ID = parseInt(__ENV.MAX_ID || '10000', 10);
+const WRITE_PATH = __ENV.WRITE_PATH || __ENV.ITEM_PATH;
+// Fixed length on purpose: a varying payload size would change later read responses.
+const WRITE_BODY = JSON.stringify({ content: 'benchmark write payload, fixed length' });
+const WRITE_PARAMS_HEADERS = { 'Content-Type': 'application/json' };
 const REQUEST_TIMEOUT = __ENV.REQUEST_TIMEOUT || '10s';
 
 export const options = {
@@ -20,11 +24,15 @@ export const options = {
 // Weights sum to 100. Mixing page sizes is what makes response length vary: size=1 is a few
 // hundred bytes, size=100 is ~20 KB, and /categories is a fixed ~110-row payload.
 const MIX = [
-    { weight: 55, kind: 'list', size: 20 },
+    { weight: 54, kind: 'list', size: 20 },
     { weight: 15, kind: 'list', size: 1 },
     { weight: 10, kind: 'list', size: 100 },
-    { weight: 15, kind: 'item' },
+    { weight: 14, kind: 'item' },
     { weight: 5, kind: 'categories' },
+    // 2% writes. Each one is an UPDATE of a single row's text, so the dataset never grows
+    // and reads stay comparable across levels. SQLite serialises writers, so a higher share
+    // would increasingly measure the write lock rather than the framework.
+    { weight: 2, kind: 'write' },
 ];
 
 let running = 0;
@@ -34,6 +42,16 @@ const TOTAL = running;
 export default function () {
     const roll = Math.random() * TOTAL;
     const pick = TABLE.find((entry) => roll < entry.upto);
+
+    if (pick.kind === 'write') {
+        const id = 1 + Math.floor(Math.random() * MAX_ID);
+        http.put(BASE + WRITE_PATH.replace('{id}', String(id)), WRITE_BODY, {
+            headers: WRITE_PARAMS_HEADERS,
+            timeout: REQUEST_TIMEOUT,
+            tags: { endpoint: 'write' },
+        });
+        return;
+    }
 
     let url;
     let endpoint;

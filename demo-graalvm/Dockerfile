@@ -4,13 +4,14 @@
 # OpenJDK row differ only in how the app was compiled.
 FROM ghcr.io/graalvm/graalvm-community:25 AS build
 # The GraalVM image ships no maven; borrow it from the official maven image.
-COPY --from=maven:3-eclipse-temurin-25 /usr/share/maven /usr/share/maven
+COPY --from=maven:3-eclipse-temurin-27 /usr/share/maven /usr/share/maven
 ENV PATH="/usr/share/maven/bin:${PATH}"
 WORKDIR /src
 COPY demo-hibernate-sqlite/pom.xml ./
 RUN mvn -B -q -Pnative -DskipTests dependency:go-offline || true
 COPY demo-hibernate-sqlite/src ./src
-RUN mvn -B -DskipTests -Pnative clean package native:compile
+# GraalVM community ships no JDK 27 image yet, so this row is pinned to release 25.
+RUN mvn -B -DskipTests -Djava.version=25 -Pnative clean package native:compile
 
 FROM debian:bookworm-slim
 RUN apt-get update \

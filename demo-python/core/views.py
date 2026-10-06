@@ -1,6 +1,6 @@
 from django.shortcuts import render
 
-from rest_framework import viewsets
+from rest_framework import viewsets, mixins
 from rest_framework.pagination import PageNumberPagination
 from .models import Category, Content
 from .serializers import CategorySerializer, ContentSerializer
@@ -52,7 +52,8 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CategorySerializer
 
 
-class ContentViewSet(viewsets.ReadOnlyModelViewSet):
+# ReadOnlyModelViewSet plus UpdateModelMixin: adds PUT/PATCH without exposing create/destroy.
+class ContentViewSet(mixins.UpdateModelMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Content.objects.select_related('category').all()
     serializer_class = ContentSerializer
     # pagination_class = StandardResultsSetPagination

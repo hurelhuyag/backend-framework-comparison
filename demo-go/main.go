@@ -61,6 +61,7 @@ func main() {
 	r.HandleFunc("/categories", GetCategories).Methods("GET")
 	r.HandleFunc("/contents", GetContents).Methods("GET")
 	r.HandleFunc("/contents/{id:[0-9]+}", GetContent).Methods("GET")
+	r.HandleFunc("/contents/{id:[0-9]+}", UpdateContent).Methods("PUT")
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -109,6 +110,34 @@ func GetContents(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// UpdateContent rewrites only the text, so the row count never changes.
+func UpdateContent(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.Atoi(mux.Vars(r)["id"])
+
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", 400)
+		return
+	}
+
+	var content Content
+	if db.First(&content, id).Error != nil {
+		http.Error(w, "content not found", 404)
+		return
+	}
+
+	content.Content = body.Content
+	if db.Model(&content).Update("content", body.Content).Error != nil {
+		http.Error(w, "update failed", 500)
+		return
+	}
+
+	w.Header().Set("content-Type", "application/json")
+	json.NewEncoder(w).Encode(content)
 }
 
 func GetContent(w http.ResponseWriter, r *http.Request) {

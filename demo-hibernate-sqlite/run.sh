@@ -8,9 +8,9 @@ ROOT="$(dirname "$HERE")"
 NATIVE="${NATIVE:-0}"
 NAME="${NAME:-java}"
 if [ "$NATIVE" = "1" ]; then
-    STACK="${STACK:-GraalVM25/Spring4.1/Hibernate7 (native)}"
+    STACK="${STACK:-GraalVM-JDK25/Spring4.1/Hibernate7 (native)}"
 else
-    STACK="${STACK:-OpenJDK25/Spring4.1/Hibernate7}"
+    STACK="${STACK:-OpenJDK27/Spring4.1/Hibernate7}"
 fi
 PORT="${PORT:-8080}"
 BENCH_PATH="${BENCH_PATH:-/contents?size=20}"

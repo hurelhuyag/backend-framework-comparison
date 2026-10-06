@@ -27,7 +27,10 @@
         <url/>
     </scm>
     <properties>
-        <java.version>25</java.version>
+        <java.version>27</java.version>
+        <!-- Boot 4.1.1 manages lombok 1.18.46, which cannot hook javac on JDK 27
+             (ExceptionInInitializerError in com.sun.tools.javac.tree.EndPosTable). -->
+        <lombok.version>1.18.48</lombok.version>
     </properties>
     <dependencies>
         <dependency>
