@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Go / Gorilla / GORM. NOTE: the listen port is hardcoded to 8080 in main.go;
-# change it there too if you change PORT here.
+# Go / Gin / GORM. The server reads PORT from the environment (default 8080).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 
 NAME="${NAME:-go}"
-STACK="${STACK:-Go/Gorm/Gorilla}"
+STACK="${STACK:-Go/Gin/Gorm}"
 PORT="${PORT:-8080}"
 BENCH_PATH="${BENCH_PATH:-/contents?size=20}"
 LIST_PATH="${LIST_PATH-}"
@@ -25,12 +24,12 @@ case "${1:-start}" in
         command -v go >/dev/null 2>&1 || { echo "go not found" >&2; exit 1; }
         ;;
     build)
-        cd "$HERE" && CGO_ENABLED=1 go build -ldflags="-s -w" -o myapp main.go
+        cd "$HERE" && CGO_ENABLED=1 go build -ldflags="-s -w" -o myapp ./cmd/server
         ;;
     start)
-        # main.go opens "demo.sqlite" relative to the cwd, so start from the repo root.
+        # DEMO_DB defaults to "demo.sqlite" relative to the cwd, so start from the repo root.
         cd "$ROOT"
-        exec "$HERE/myapp"
+        PORT="$PORT" exec "$HERE/myapp"
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2
