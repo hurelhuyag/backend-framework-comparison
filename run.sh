@@ -24,6 +24,11 @@
 #   ./run.sh --report-only             rebuild the report from stored results, measure nothing
 #   ./run.sh --loadgen ab              single-URL ab instead of the mixed k6 suite
 #   ./run.sh --no-tag                  skip creating the bench/<date>-<n> git tag
+#   ./run.sh --db-cpus 4               cores reserved for PostgreSQL (taken after the server's)
+#
+# Every demo reads the same PostgreSQL server (db/postgres.sh, a bfc-postgres container on the
+# host network). Before each framework the harness clones a fresh `demo` database from
+# demo_template, so benchmark writes never reach the next framework.
 #
 set -uo pipefail
 # Deterministic numeric formatting: under a comma-decimal locale, awk parses "12345.67"
@@ -45,8 +50,10 @@ HOSTPORT_BASE="${HOSTPORT_BASE:-19080}"
 LOADGEN="${LOADGEN:-k6}"
 K6_IMAGE="${K6_IMAGE:-grafana/k6:2.3.0}"
 K6_SCRIPT="${K6_SCRIPT:-$ROOT/bench/mixed.js}"
-JOURNAL="${JOURNAL:-WAL}"
-DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
+PG_PORT="${PG_PORT:-5432}"
+DB_NAME="${DB_NAME:-demo}"
+DB_CPUS="${DB_CPUS:-4}"
+DB_POOL_SIZE="${DB_POOL_SIZE:-32}"
 ONLY=""
 DO_BUILD=1
 LIST_ONLY=0
@@ -55,6 +62,7 @@ DO_TAG=1
 NCPU="$(nproc)"
 SERVER_CPUS="${SERVER_CPUS:-}"
 LOAD_CPUS="${LOAD_CPUS:-}"
+PG_CPUS="${PG_CPUS:-}"
 
 # Choose $1 distinct PHYSICAL cores for the server, preferring efficiency cores (lowest max
 # clock) and taking one hyperthread each, then hand every remaining cpu to the load generator.
@@ -106,7 +114,7 @@ while [ $# -gt 0 ]; do
         --memory) MEMORY="$2"; shift 2 ;;
         --server-cpus) SERVER_CPUS="$2"; shift 2 ;;
         --load-cpus) LOAD_CPUS="$2"; shift 2 ;;
-        --journal) JOURNAL="$2"; shift 2 ;;
+        --db-cpus) DB_CPUS="$2"; shift 2 ;;
         --loadgen) LOADGEN="$2"; shift 2 ;;
         --no-tag) DO_TAG=0; shift ;;
         --list) LIST_ONLY=1; shift ;;
@@ -124,6 +132,31 @@ if [ -z "$SERVER_CPUS" ] || [ -z "$LOAD_CPUS" ]; then
 fi
 [ -n "$SERVER_CPUS" ] || SERVER_CPUS="0-$((CPUS - 1))"
 
+# PostgreSQL gets the first $DB_CPUS cpus of the load set, so app, database and load generator
+# never share a core. Too few cpus left -> no pinning for the database. A remote database
+# (PG_REMOTE, see db/postgres.sh) has its own machine, so nothing is reserved here.
+if [ -z "${PG_REMOTE:-}" ] && [ -z "$PG_CPUS" ] && [ -n "$LOAD_CPUS" ] && [ "$DB_CPUS" -gt 0 ]; then
+    read -r PG_CPUS LOAD_CPUS <<<"$(python3 -I - "$LOAD_CPUS" "$DB_CPUS" <<'SPLIT'
+import sys
+cpus = []
+for part in sys.argv[1].split(','):
+    a, _, b = part.partition('-')
+    cpus += range(int(a), int(b or a) + 1)
+n = int(sys.argv[2])
+def rng(xs):
+    out = []
+    for x in xs:
+        if out and x == out[-1][1] + 1: out[-1][1] = x
+        else: out.append([x, x])
+    return ','.join(str(a) if a == b else f'{a}-{b}' for a, b in out)
+if len(cpus) > n:
+    print(rng(cpus[:n]), rng(cpus[n:]))
+else:
+    print('', sys.argv[1])
+SPLIT
+)"
+fi
+
 if [ "$LOADGEN" = ab ]; then
     command -v ab >/dev/null 2>&1 || { echo "ab (apache2-utils) is required" >&2; exit 1; }
 elif [ "$LOADGEN" = k6 ]; then
@@ -133,15 +166,33 @@ else
     echo "unknown --loadgen: $LOADGEN (expected k6 or ab)" >&2; exit 1
 fi
 
-# Random ids for the item endpoint are drawn from 1..MAX_ID.
-MAX_ID="${MAX_ID:-$(python3 -I -c "
-import sqlite3,sys
-print(sqlite3.connect('file:' + sys.argv[1] + '?immutable=1', uri=True).execute('select max(id) from content').fetchone()[0])
-" "$DEMO_DB" 2>/dev/null || echo 10000)}"
-if [ "$MODE" = docker ]; then
-    command -v docker >/dev/null 2>&1 || { echo "docker is required for --docker mode" >&2; exit 1; }
-    docker info >/dev/null 2>&1 || { echo "cannot reach the docker daemon" >&2; exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "docker is required (PostgreSQL always runs in a container)" >&2; exit 1; }
+docker info >/dev/null 2>&1 || { echo "cannot reach the docker daemon" >&2; exit 1; }
+
+if [ "$ONLY" != "__none__" ] && [ "$LIST_ONLY" -eq 0 ]; then
+    PG_CPUS="$PG_CPUS" PG_PORT="$PG_PORT" "$ROOT/db/postgres.sh" start || exit 1
 fi
+PG_HOST="$("$ROOT/db/postgres.sh" host)"
+if [ -n "${PG_REMOTE:-}" ]; then
+    # Every query pays this round trip, so the report records it next to the results.
+    PG_RTT="$(ping -c 20 -i 0.2 -q "$PG_HOST" 2>/dev/null | awk -F/ '/^(rtt|round-trip)/ {printf "%.2f ms avg, %.2f ms max", $5, $6}')"
+    PG_WHERE="remote, $PG_REMOTE at $PG_HOST (round trip ${PG_RTT:-unknown})"
+else
+    PG_WHERE="local, host network, cpus ${PG_CPUS:-not pinned}"
+fi
+PG_VERSION="$("$ROOT/db/postgres.sh" psql -d postgres -tA -c 'show server_version' 2>/dev/null || echo '?')"
+
+# Random ids for the item endpoint are drawn from 1..MAX_ID.
+MAX_ID="${MAX_ID:-$("$ROOT/db/postgres.sh" psql -d demo_template -tA -c 'select max(id) from content' 2>/dev/null || echo 10000)}"
+
+# What every server gets to find its database (see the contract in db/postgres.sh).
+DB_ENV=(
+    DATABASE_URL="postgres://bench:bench@$PG_HOST:$PG_PORT/$DB_NAME"
+    PGHOST="$PG_HOST" PGPORT="$PG_PORT" PGUSER=bench PGPASSWORD=bench PGDATABASE="$DB_NAME"
+    DB_POOL_SIZE="$DB_POOL_SIZE"
+)
+DOCKER_DB_ENV=()
+for kv in "${DB_ENV[@]}"; do DOCKER_DB_ENV+=(-e "$kv"); done
 
 if [ "$MODE" = docker ]; then
     LIMITS_DESC="--cpus=$CPUS --cpuset-cpus=$SERVER_CPUS --memory=$MEMORY (swap disabled)"
@@ -185,6 +236,52 @@ fi
 ulimit -n 65535 2>/dev/null || true
 
 port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
+# Total CPU microseconds a container has used (cgroup v2 cpu.stat), or empty if unreadable.
+# Read from the host side, so it works for images without a shell or cat.
+cpu_usec() {
+    local id
+    id="$(docker inspect -f '{{.Id}}' "$1" 2>/dev/null)" || return 0
+    for f in "/sys/fs/cgroup/system.slice/docker-$id.scope/cpu.stat" "/sys/fs/cgroup/docker/$id/cpu.stat"; do
+        [ -r "$f" ] && { awk '/^usage_usec/ {print $2}' "$f"; return 0; }
+    done
+}
+
+# "<busy> <total>" jiffies summed over the cpus of a cpuset ("8-14,16"), from /proc/stat.
+# Used for the load generator, whose k6 container is gone (--rm) before it could be read.
+cpuset_jiffies() {
+    python3 -I - "$1" <<'JIFFIES'
+import sys
+want = set()
+for part in sys.argv[1].split(','):
+    a, _, b = part.partition('-')
+    want.update(range(int(a), int(b or a) + 1))
+busy = total = 0
+for line in open('/proc/stat'):
+    f = line.split()
+    if f[0].startswith('cpu') and f[0][3:].isdigit() and int(f[0][3:]) in want:
+        v = list(map(int, f[1:8]))
+        total += sum(v); busy += sum(v) - v[3] - v[4]   # minus idle and iowait
+print(busy, total)
+JIFFIES
+}
+
+# Average cores busy over a cpuset between two cpuset_jiffies samples, two decimals.
+cpuset_busy() {
+    local n
+    n="$(python3 -I -c "import sys; print(sum(int(b or a) - int(a) + 1 for a, _, b in (p.partition('-') for p in sys.argv[1].split(','))))" "$3")"
+    awk -v a="$1" -v b="$2" -v n="$n" 'BEGIN {
+        split(a, x, " "); split(b, y, " ")
+        if (y[2] - x[2] <= 0) { print "-"; exit }
+        printf "%.2f", (y[1] - x[1]) / (y[2] - x[2]) * n }'
+}
+
+# Average cores busy: CPU microseconds used / (requests / req/s), two decimals; "-" if unknown.
+cores_busy() {
+    awk -v a="$1" -v b="$2" -v n="$REQUESTS" -v r="$3" 'BEGIN {
+        if (a == "" || b == "" || r + 0 <= 0) { print "-"; exit }
+        printf "%.2f", (b - a) / 1e6 / (n / r) }'
+}
 
 # Monotonic milliseconds. Wall-clock date(1) can step backwards under NTP mid-run.
 now_ms() { awk '{printf "%d", $1 * 1000}' /proc/uptime; }
@@ -258,29 +355,22 @@ if [ "$LIST_ONLY" -eq 1 ]; then
     exit 0
 fi
 
-declare -A RPS SKIPPED ROWS BYTES NOTE IMGSIZE BOOTMS BUILDS PEAKMEM P50 P95 P99
+declare -A RPS SKIPPED ROWS BYTES NOTE IMGSIZE BOOTMS BUILDS PEAKMEM P50 P95 P99 APPCPU DBCPU LOADCPU
 
 if [ "$MODE" = docker ]; then
-    echo "mode=docker  cpus=$CPUS (cpuset $SERVER_CPUS)  memory=$MEMORY  ab on cpus=${LOAD_CPUS:-all}"
+    echo "mode=docker  cpus=$CPUS (cpuset $SERVER_CPUS)  memory=$MEMORY  load on cpus=${LOAD_CPUS:-all}"
 else
-    echo "mode=native  each framework gets a fresh copy of $(basename "$DEMO_DB") (journal_mode=$JOURNAL)"
+    echo "mode=native"
 fi
+echo "postgres $PG_VERSION ($PG_WHERE), fresh '$DB_NAME' cloned from demo_template per framework, pool=$DB_POOL_SIZE"
 echo "requests=-n $REQUESTS  levels=-c $LEVELS"
 echo
 
 cleanup_docker() { docker rm -f "bfc-$1" >/dev/null 2>&1 || true; }
 
-# Native mode: like a fresh container, every framework starts from its own copy of the dataset,
-# so benchmark writes never reach the repo's demo.sqlite or the next framework.
-fresh_db() {
-    rm -f "$1" "$1-wal" "$1-shm"
-    cp "$DEMO_DB" "$1"
-    python3 -I -c "
-import sqlite3,sys
-sqlite3.connect(sys.argv[1]).execute('pragma journal_mode=' + sys.argv[2]).close()
-" "$1" "$JOURNAL"
-}
-drop_db() { rm -f "$1" "$1-wal" "$1-shm"; }
+# Every framework starts from its own fresh clone of the dataset, so benchmark writes never
+# reach the next framework.
+fresh_db() { "$ROOT/db/postgres.sh" reset "$DB_NAME" >/dev/null; }
 
 for i in "${!NAMES[@]}"; do
     name="${NAMES[$i]}"; dir="${DIRS[$i]}"; port="${PORTS[$i]}"; bpath="${PATHS[$i]}"
@@ -350,19 +440,20 @@ for i in "${!NAMES[@]}"; do
     else
         echo "--- start (port $hostport)"
     fi
+    fresh_db || { SKIPPED[$name]="database reset failed"; echo "    SKIP - database reset failed"; echo; continue; }
     t0=$(now_ms)
     if [ "$MODE" = docker ]; then
         docker run -d --name "bfc-$name" \
             --cpus="$CPUS" --cpuset-cpus="$SERVER_CPUS" \
             --memory="$MEMORY" --memory-swap="$MEMORY" \
-            --network host -e PORT="$hostport" \
+            --ulimit nofile=65535:65535 \
+            --network host -e PORT="$hostport" "${DOCKER_DB_ENV[@]}" \
             "bfc-$name:bench" >"$log.cid" 2>"$log.server.log" || {
                 SKIPPED[$name]="docker run failed: $(tr -d '\n' <"$log.server.log" | cut -c1-90)"
                 echo "    SKIP - ${SKIPPED[$name]}"; echo; continue
             }
     else
-        fresh_db "$log.sqlite"
-        DEMO_DB="$log.sqlite" setsid bash "$dir/run.sh" start >"$log.server.log" 2>&1 &
+        env "${DB_ENV[@]}" setsid bash "$dir/run.sh" start >"$log.server.log" 2>&1 &
         pgid=$!
     fi
 
@@ -387,7 +478,6 @@ for i in "${!NAMES[@]}"; do
         else
             tail -8 "$log.server.log" | sed 's/^/      /'
             kill -TERM -"$pgid" 2>/dev/null; sleep 1; kill -KILL -"$pgid" 2>/dev/null
-            drop_db "$log.sqlite"
         fi
         wait_for_port_free "$hostport"
         echo; continue
@@ -402,8 +492,11 @@ for i in "${!NAMES[@]}"; do
     # ---- measure -----------------------------------------------------------
     for c in $LEVELS; do
         out="$log.c$c.log"
+        app_cpu0="$([ "$MODE" = docker ] && cpu_usec "bfc-$name")"
+        db_cpu0="$("$ROOT/db/postgres.sh" cpu)"
+        load_j0="$([ -n "$LOAD_CPUS" ] && cpuset_jiffies "$LOAD_CPUS")"
         if [ "$LOADGEN" = k6 ]; then
-            if docker run --rm --network host \
+            if docker run --rm --network host --ulimit nofile=65535:65535 \
                     ${LOAD_CPUS:+--cpuset-cpus="$LOAD_CPUS"} \
                     -v "$K6_SCRIPT":/mix.js:ro \
                     -e BASE="http://127.0.0.1:${hostport}" \
@@ -434,8 +527,11 @@ print(fmt(d.get('rps')), fmt(d.get('failed_rate')), fmt(d.get('p50')), fmt(d.get
                     fi
                     RPS[$name,$c]="${r}${suspect}"; P50[$name,$c]="$p50"
                     P95[$name,$c]="$p95"; P99[$name,$c]="$p99"
-                    printf '    c=%-6s %10s req/s%-1s  p50=%-8s p95=%-8s p99=%-8s max=%s\n' \
-                        "$c" "$r" "$suspect" "$p50" "$p95" "$p99" "$pmax"
+                    APPCPU[$name,$c]="$(cores_busy "$app_cpu0" "$([ "$MODE" = docker ] && cpu_usec "bfc-$name")" "$r")"
+                    DBCPU[$name,$c]="$(cores_busy "$db_cpu0" "$("$ROOT/db/postgres.sh" cpu)" "$r")"
+                    LOADCPU[$name,$c]="$([ -n "$load_j0" ] && cpuset_busy "$load_j0" "$(cpuset_jiffies "$LOAD_CPUS")" "$LOAD_CPUS")"
+                    printf '    c=%-6s %10s req/s%-1s  p50=%-8s p95=%-8s p99=%-8s max=%-9s cpu app=%s db=%s load=%s\n' \
+                        "$c" "$r" "$suspect" "$p50" "$p95" "$p99" "$pmax" "${APPCPU[$name,$c]}" "${DBCPU[$name,$c]}" "${LOADCPU[$name,$c]:--}"
                 else
                     RPS[$name,$c]="Failed"
                     NOTE[$name]="${NOTE[$name]:-}c$c:fail rate ${f:-?}; "
@@ -490,6 +586,9 @@ print(fmt(d.get('rps')), fmt(d.get('failed_rate')), fmt(d.get('p50')), fmt(d.get
             echo "RPS_$c=${RPS[$name,$c]:-}"
             echo "P50_$c=${P50[$name,$c]:-}"
             echo "P95_$c=${P95[$name,$c]:-}"
+            echo "APPCPU_$c=${APPCPU[$name,$c]:-}"
+            echo "DBCPU_$c=${DBCPU[$name,$c]:-}"
+            echo "LOADCPU_$c=${LOADCPU[$name,$c]:-}"
             echo "P99_$c=${P99[$name,$c]:-}"
         done
     } >"$RESULTDIR/$name.env"
@@ -502,7 +601,6 @@ print(fmt(d.get('rps')), fmt(d.get('failed_rate')), fmt(d.get('p50')), fmt(d.get
         cleanup_docker "$name"
     else
         kill -TERM -"$pgid" 2>/dev/null; sleep 1; kill -KILL -"$pgid" 2>/dev/null
-        drop_db "$log.sqlite"
     fi
     wait_for_port_free "$hostport" || echo "    warn: host port $hostport still busy"
     echo
@@ -550,7 +648,7 @@ emit_environment() {
     read -r dsrc dfs dopts <<<"$(findmnt -no SOURCE,FSTYPE,OPTIONS --target "$droot" 2>/dev/null || echo 'n/a n/a n/a')"
     dev="$(sed 's/\[.*//' <<<"$dsrc")"
     rot="$(lsblk -dno ROTA "$dev" 2>/dev/null | tr -d ' ')"
-    dbsize="$(stat -c %s "$DEMO_DB" 2>/dev/null | awk '{printf "%.0f KB", $1/1024}')"
+    dbsize="$("$ROOT/db/postgres.sh" psql -d demo_template -tA -c "select pg_size_pretty(pg_database_size('demo_template'))" 2>/dev/null)"
 
     echo '== Environment'
     echo
@@ -561,6 +659,7 @@ emit_environment() {
     echo "model        $(sed -n 's/^model name[ \t]*: //p' /proc/cpuinfo | head -1)"
     echo "topology     $(cpu_topology)"
     echo "server cpus  $SERVER_CPUS  ($CPUS physical cores, one thread each)"
+    echo "db cpus      $([ -n "${PG_REMOTE:-}" ] && echo "none, PostgreSQL runs on $PG_REMOTE" || echo "${PG_CPUS:-not pinned}  (PostgreSQL)")"
     echo "load cpus    ${LOAD_CPUS:-all}"
     echo "governor     $(rd /sys/devices/system/cpu/cpufreq/policy0/scaling_governor) ($(rd /sys/devices/system/cpu/cpufreq/policy0/scaling_driver), epp=$(rd /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference))"
     echo "turbo        $([ "$(rd /sys/devices/system/cpu/intel_pstate/no_turbo)" = 0 ] && echo enabled || echo "disabled/unknown")"
@@ -591,7 +690,7 @@ emit_environment() {
     echo
     echo '[source]'
     echo '----'
-    echo "database     $(basename "$DEMO_DB") ${dbsize:-?}, copied into each image"
+    echo "database     PostgreSQL demo_template ${dbsize:-?}, cloned fresh per framework (bfc-postgres container, $PG_WHERE)"
     echo "docker root  $droot on $dsrc ($dfs, $dopts)"
     echo "device       $(basename "$dev"), $([ "$rot" = 0 ] && echo non-rotational || echo rotational), scheduler=$(sed -n 's/.*\[\(.*\)\].*/\1/p' "/sys/block/$(lsblk -dno PKNAME "$dev" 2>/dev/null || basename "$dev")/queue/scheduler" 2>/dev/null || echo n/a)"
     echo "free         $(df -h --output=avail,size,pcent "$droot" 2>/dev/null | tail -1 | awk '{print $1" free of "$2" ("$3" used)"}')"
@@ -674,14 +773,10 @@ stale=0
     if [ "$MODE" = docker ]; then
         echo "limits      $LIMITS_DESC"
             echo "load gen    ab pinned to cpus ${LOAD_CPUS:-all}"
-        echo "database    demo.sqlite copied into each image (no shared file between runs)"
-        echo "            journal_mode=$(python3 -I -c "
-import sqlite3,sys
-print(sqlite3.connect('file:' + sys.argv[1] + '?immutable=1', uri=True).execute('pragma journal_mode').fetchone()[0])
-" "$DEMO_DB" 2>/dev/null || echo '?') - identical for every framework"
-    else
-        echo "database    fresh copy of $DEMO_DB per framework (journal_mode=$JOURNAL)"
     fi
+    echo "database    PostgreSQL $PG_VERSION (db/postgres.sh), $PG_WHERE"
+    echo "            fresh '$DB_NAME' cloned from demo_template per framework; pool size $DB_POOL_SIZE"
+    echo "            (in-process pools) or one persistent connection per worker (gunicorn, php-fpm)"
     if [ "$LOADGEN" = k6 ]; then
         echo "load        $K6_IMAGE, mixed read suite (bench/mixed.js)"
         echo "mix         $MIX_DESC"
@@ -718,6 +813,27 @@ print(sqlite3.connect('file:' + sys.argv[1] + '?immutable=1', uri=True).execute(
             for c in $LEVELS; do
                 v="$(getf "$name" "P95_$c")"
                 printf ' | %s' "${v:--}"
+            done
+            echo
+        done
+        echo '|==='
+        echo
+
+        echo '== CPU busy (average cores, app / PostgreSQL / load generator)'
+        echo
+        echo "App capped at $CPUS cores (cpus $SERVER_CPUS), PostgreSQL on cpus ${PG_CPUS:-unpinned}, load generator on"
+        echo "cpus ${LOAD_CPUS:-unpinned}. A column close to its own core count is the limit at that level: the"
+        echo 'app saturating is a framework result, PostgreSQL or the load generator saturating is not.'
+        echo 'The load-generator figure is whole-core usage over the run, including k6 start-up.'
+        echo
+        level_header 'Platform'
+        for i in "${!NAMES[@]}"; do
+            name="${NAMES[$i]}"
+            [ -f "$RESULTDIR/$name.env" ] || continue
+            printf '| %s' "$(getf "$name" STACK)"
+            for c in $LEVELS; do
+                a="$(getf "$name" "APPCPU_$c")"; d="$(getf "$name" "DBCPU_$c")"; l="$(getf "$name" "LOADCPU_$c")"
+                if [ -n "$a$d$l" ]; then printf ' | %s / %s / %s' "${a:--}" "${d:--}" "${l:--}"; else printf ' | -'; fi
             done
             echo
         done

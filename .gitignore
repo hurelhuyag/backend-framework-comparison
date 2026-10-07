@@ -1,7 +1,5 @@
 .bench-logs/
 .idea/
-demo.sqlite-shm
-demo.sqlite-wal
 
 # per-demo build output
 demo-go/myapp
@@ -11,7 +9,6 @@ demo-hibernate-sqlite/target/
 demo-php/vendor/
 demo-php/.env
 demo-python/.venv/
-demo-python/demo.sqlite
 demo-rust/target/
 __pycache__/
 *.pyc

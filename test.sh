@@ -4,8 +4,10 @@
 #   ./test.sh              all demos
 #   ./test.sh go rust      just those (directory names without the demo- prefix)
 #
-# Each demo-*/Dockerfile has a `test` stage that copies demo.sqlite into the image, so a test run
-# never reads or writes the repo's database and never shares one with another demo.
+# Each demo-*/Dockerfile has a `test` stage. Its container runs on the host network against the
+# bfc-postgres server (db/postgres.sh), in its own database test_<demo> cloned fresh from
+# demo_template for that run, so a test run never shares data with a benchmark or another demo.
+# The connection is passed as DATABASE_URL plus the libpq PG* variables (see db/postgres.sh).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
@@ -19,6 +21,10 @@ else
     done
 fi
 
+PG_PORT="${PG_PORT:-5432}"
+db/postgres.sh start || exit 1
+PG_HOST="$(db/postgres.sh host)"
+
 declare -A RESULT
 for demo in "${demos[@]}"; do
     image="bfc-$demo:test"
@@ -28,7 +34,12 @@ for demo in "${demos[@]}"; do
         RESULT[$demo]="BUILD FAILED"
         continue
     fi
-    if docker run --rm "$image"; then
+    db="test_${demo//-/_}"
+    db/postgres.sh reset "$db" >/dev/null || { RESULT[$demo]="DB RESET FAILED"; continue; }
+    if docker run --rm --network host --ulimit nofile=65535:65535 \
+            -e DATABASE_URL="postgres://bench:bench@$PG_HOST:$PG_PORT/$db" \
+            -e PGHOST="$PG_HOST" -e PGPORT="$PG_PORT" -e PGUSER=bench -e PGPASSWORD=bench -e PGDATABASE="$db" \
+            "$image"; then
         RESULT[$demo]="passed"
     else
         RESULT[$demo]="FAILED"

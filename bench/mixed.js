@@ -30,8 +30,8 @@ const MIX = [
     { weight: 14, kind: 'item' },
     { weight: 5, kind: 'categories' },
     // 2% writes. Each one is an UPDATE of a single row's text, so the dataset never grows
-    // and reads stay comparable across levels. SQLite serialises writers, so a higher share
-    // would increasingly measure the write lock rather than the framework.
+    // and reads stay comparable across levels. Random ids keep row-lock contention negligible,
+    // so the writes measure the framework's write path rather than locking.
     { weight: 2, kind: 'write' },
 ];
 

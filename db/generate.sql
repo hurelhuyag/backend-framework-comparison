@@ -1,6 +1,9 @@
--- Builds demo.sqlite, the dataset every demo serves and every demo's tests read.
+-- Builds the dataset every demo serves and every demo's tests read, in PostgreSQL.
 --
---   rm -f demo.sqlite && sqlite3 demo.sqlite < db/generate.sql
+-- db/postgres.sh loads it into the demo_template database; each benchmark run and each test run
+-- clones a fresh database from that template (see db/postgres.sh reset).
+--
+--   psql -v ON_ERROR_STOP=1 -d demo_template -f db/generate.sql
 --
 -- Fully deterministic: no random(), so the same rows come out every time.
 --
@@ -12,17 +15,15 @@
 
 create table category (
     id integer not null primary key,
-    parent_id integer,
+    parent_id integer references category (id) on update cascade,
     name text not null,
-    unique (parent_id, name),
-    foreign key (parent_id) references category (id) on update cascade
+    unique (parent_id, name)
 );
 
 create table content (
     id integer not null primary key,
-    category_id integer,
-    content text not null,
-    foreign key (category_id) references category (id) on update cascade
+    category_id integer references category (id) on update cascade,
+    content text not null
 );
 
 create index content_category_id on content (category_id);
@@ -144,24 +145,14 @@ insert into headline (k, prefix) values
     (5, 'Interview:'),
     (6, 'Live updates:');
 
-with recursive n(id) as (
-    select 1
-    union all
-    select id + 1 from n where id < 100000
-)
 insert into content (id, category_id, content)
 select n.id,
        case when n.id % 1000 = 0 then null else s.id end,
        case when n.id % 1000 = 0 then 'Uncategorized note ' || n.id
             else h.prefix || ' ' || s.name || ' #' || n.id end
-from n
+from generate_series(1, 100000) as n(id)
 join category_slot s on s.slot = (n.id - 1) % 100 + 1
 join headline h on h.k = n.id % 7;
 
-analyze;
-vacuum;
-
--- WAL is persisted in the file header, so every demo opens the database in WAL mode. Without
--- it, each UPDATE waits for all concurrent readers and the 2% writes in the benchmark mix fail
--- with "database is locked" under load.
-pragma journal_mode = wal;
+vacuum analyze category;
+vacuum analyze content;
