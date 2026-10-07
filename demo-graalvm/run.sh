@@ -17,6 +17,8 @@ LIST_PATH="${LIST_PATH-}"
 ITEM_PATH="${ITEM_PATH-}"
 [ -n "$ITEM_PATH" ] || ITEM_PATH='/contents/{id}'
 CATEGORIES_PATH="${CATEGORIES_PATH-}"
+NOTES="${NOTES-}"
+[ -n "$NOTES" ] || NOTES='AOT: needs no warmup, but has no JIT ceiling either; same source as java'
 [ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/categories'
 APP="${APP:-$HERE/demo-graalvm-app}"
 SRC="${SRC:-$ROOT/demo-hibernate-sqlite}"
@@ -25,6 +27,7 @@ case "${1:-start}" in
     meta)
         printf 'NAME=%s\nSTACK=%s\nPORT=%s\nBENCH_PATH=%s\n' "$NAME" "$STACK" "$PORT" "$BENCH_PATH"
         printf 'LIST_PATH=%s\nITEM_PATH=%s\nCATEGORIES_PATH=%s\n' "$LIST_PATH" "$ITEM_PATH" "$CATEGORIES_PATH"
+        printf 'NOTES=%s\n' "$NOTES"
         ;;
     check)
         command -v native-image >/dev/null 2>&1 || { echo "native-image not found (needs a GraalVM JDK)" >&2; exit 1; }

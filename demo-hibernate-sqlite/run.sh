@@ -20,6 +20,8 @@ LIST_PATH="${LIST_PATH-}"
 ITEM_PATH="${ITEM_PATH-}"
 [ -n "$ITEM_PATH" ] || ITEM_PATH='/contents/{id}'
 CATEGORIES_PATH="${CATEGORIES_PATH-}"
+NOTES="${NOTES-}"
+[ -n "$NOTES" ] || NOTES='only demo with a real txn boundary; 1 query/read; needs ~30k req to warm'
 [ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/categories'
 JAVA_OPTS="${JAVA_OPTS:-}"
 
@@ -27,6 +29,7 @@ case "${1:-start}" in
     meta)
         printf 'NAME=%s\nSTACK=%s\nPORT=%s\nBENCH_PATH=%s\n' "$NAME" "$STACK" "$PORT" "$BENCH_PATH"
         printf 'LIST_PATH=%s\nITEM_PATH=%s\nCATEGORIES_PATH=%s\n' "$LIST_PATH" "$ITEM_PATH" "$CATEGORIES_PATH"
+        printf 'NOTES=%s\n' "$NOTES"
         ;;
     check)
         command -v mvn >/dev/null 2>&1 || { echo "mvn not found" >&2; exit 1; }

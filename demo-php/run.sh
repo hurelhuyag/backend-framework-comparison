@@ -23,6 +23,8 @@ LIST_PATH="${LIST_PATH-}"
 ITEM_PATH="${ITEM_PATH-}"
 [ -n "$ITEM_PATH" ] || ITEM_PATH='/api/contents/{id}'
 CATEGORIES_PATH="${CATEGORIES_PATH-}"
+NOTES="${NOTES-}"
+[ -n "$NOTES" ] || NOTES='nginx + php-fpm, 32 static workers'
 [ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/api/categories'
 DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
 
@@ -30,6 +32,7 @@ case "${1:-start}" in
     meta)
         printf 'NAME=%s\nSTACK=%s\nPORT=%s\nBENCH_PATH=%s\n' "$NAME" "$STACK" "$PORT" "$BENCH_PATH"
         printf 'LIST_PATH=%s\nITEM_PATH=%s\nCATEGORIES_PATH=%s\n' "$LIST_PATH" "$ITEM_PATH" "$CATEGORIES_PATH"
+        printf 'NOTES=%s\n' "$NOTES"
         ;;
     check)
         if [ "$PHP_SERVER" = "external" ]; then exit 0; fi

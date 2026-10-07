@@ -33,8 +33,11 @@ public class SimpleContentService implements ContentService {
     // Hibernate dirty-checking flushes the change when the transaction commits.
     @Override
     public ContentView updateText(Long id, String text) {
-        var content = contentRepo.findById(id).orElseThrow(() -> new ContentNotFoundException(id));
-        content.setContent(text);
-        return new ContentView(content);
+        if (contentRepo.updateText(id, text) == 0) {
+            throw new ContentNotFoundException(id);
+        }
+        return contentRepo.findDetail(id)
+            .map(ContentView::new)
+            .orElseThrow(() -> new ContentNotFoundException(id));
     }
 }

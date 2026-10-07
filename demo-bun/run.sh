@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Rust / Axum / SeaORM. Customize by editing the vars below or exporting them.
+# Bun / Hono / Drizzle. Customize by editing the vars below or exporting them.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 
-NAME="${NAME:-rust}"
-STACK="${STACK:-Rust1.99/Axum0.8/SeaORM2.0}"
-PORT="${PORT:-8081}"
+NAME="${NAME:-bun}"
+STACK="${STACK:-Bun/Hono/Drizzle}"
+PORT="${PORT:-8084}"
 BENCH_PATH="${BENCH_PATH:-/api/contents?size=20}"
 LIST_PATH="${LIST_PATH-}"
 [ -n "$LIST_PATH" ] || LIST_PATH='/api/contents?size={size}'
@@ -14,10 +14,10 @@ ITEM_PATH="${ITEM_PATH-}"
 [ -n "$ITEM_PATH" ] || ITEM_PATH='/api/contents/{id}'
 CATEGORIES_PATH="${CATEGORIES_PATH-}"
 NOTES="${NOTES-}"
-[ -n "$NOTES" ] || NOTES='1-3 queries/read (batched ancestor loads); c=1000 cell is a client stall'
+[ -n "$NOTES" ] || NOTES='query builder, not an ORM; 1 query/read; 4 workers via SO_REUSEPORT'
 [ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/api/categories'
 DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
-CARGO="${CARGO:-$HOME/.cargo/bin/cargo}"
+BUN="${BUN:-bun}"
 
 case "${1:-start}" in
     meta)
@@ -26,14 +26,18 @@ case "${1:-start}" in
         printf 'NOTES=%s\n' "$NOTES"
         ;;
     check)
-        command -v "$CARGO" >/dev/null 2>&1 || { echo "cargo not found (set CARGO=)" >&2; exit 1; }
+        command -v "$BUN" >/dev/null 2>&1 || { echo "bun not found (set BUN=)" >&2; exit 1; }
         ;;
     build)
-        cd "$HERE" && "$CARGO" build --release
+        cd "$HERE"
+        "$BUN" install --frozen-lockfile 2>/dev/null || "$BUN" install
+        # demo-nodejs ships precompiled JS via tsc; bundle here so neither JS demo pays a
+        # transpile cost at startup that the other avoids.
+        "$BUN" build src/index.ts --target=bun --outfile=dist/server.js
         ;;
     start)
         cd "$HERE"
-        exec env DATABASE_URL="sqlite://$DEMO_DB" PORT="$PORT" ./target/release/demo-rust
+        exec env DEMO_DB="$DEMO_DB" PORT="$PORT" "$BUN" dist/server.js
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2

@@ -24,6 +24,7 @@
 #   ./run.sh --report-only             rebuild the report from stored results, measure nothing
 #   ./run.sh --loadgen ab              single-URL ab instead of the mixed k6 suite
 #   ./run.sh --no-tag                  skip creating the bench/<date>-<n> git tag
+#   ./run.sh --warmup 0                measure cold; default warms 20000 requests first
 #
 set -uo pipefail
 # Deterministic numeric formatting: under a comma-decimal locale, awk parses "12345.67"
@@ -43,6 +44,8 @@ RESULTDIR="${RESULTDIR:-$LOGDIR/results}"
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
 HOSTPORT_BASE="${HOSTPORT_BASE:-19080}"
 LOADGEN="${LOADGEN:-k6}"
+WARMUP="${WARMUP:-20000}"
+WARMUP_CONC="${WARMUP_CONC:-100}"
 K6_IMAGE="${K6_IMAGE:-grafana/k6:2.3.0}"
 K6_SCRIPT="${K6_SCRIPT:-$ROOT/bench/mixed.js}"
 JOURNAL="${JOURNAL:-WAL}"
@@ -108,6 +111,7 @@ while [ $# -gt 0 ]; do
         --load-cpus) LOAD_CPUS="$2"; shift 2 ;;
         --journal) JOURNAL="$2"; shift 2 ;;
         --loadgen) LOADGEN="$2"; shift 2 ;;
+        --warmup) WARMUP="$2"; shift 2 ;;
         --no-tag) DO_TAG=0; shift ;;
         --list) LIST_ONLY=1; shift ;;
         --report-only) ONLY="__none__"; DO_BUILD=0; shift ;;
@@ -228,7 +232,7 @@ print("?")
 }
 
 # ---- discover ----------------------------------------------------------------
-declare -a NAMES STACKS PORTS PATHS DIRS LISTPATHS ITEMPATHS CATPATHS
+declare -a NAMES STACKS PORTS PATHS DIRS LISTPATHS ITEMPATHS CATPATHS NOTES
 for sh in "$ROOT"/demo-*/run.sh; do
     [ -f "$sh" ] || continue
     dir="$(dirname "$sh")"
@@ -243,9 +247,10 @@ for sh in "$ROOT"/demo-*/run.sh; do
     lpath="$(sed -n 's/^LIST_PATH=//p' <<<"$meta")"
     ipath="$(sed -n 's/^ITEM_PATH=//p' <<<"$meta")"
     cpath="$(sed -n 's/^CATEGORIES_PATH=//p' <<<"$meta")"
+    note="$(sed -n 's/^NOTES=//p' <<<"$meta")"
     [ -n "$name" ] || continue
     NAMES+=("$name"); STACKS+=("$stack"); PORTS+=("$port"); PATHS+=("$bpath"); DIRS+=("$dir")
-    LISTPATHS+=("$lpath"); ITEMPATHS+=("$ipath"); CATPATHS+=("$cpath")
+    LISTPATHS+=("$lpath"); ITEMPATHS+=("$ipath"); CATPATHS+=("$cpath"); NOTES+=("$note")
 done
 
 [ "${#NAMES[@]}" -gt 0 ] || { echo "no demos matched" >&2; exit 1; }
@@ -400,6 +405,28 @@ for i in "${!NAMES[@]}"; do
     echo "    ready in ${BOOTMS[$name]}ms: ${ROWS[$name]} rows, ${BYTES[$name]} bytes"
 
     # ---- measure -----------------------------------------------------------
+    # The JVM needs tens of thousands of requests to reach steady state (measured: 1644 ->
+    # 8250 rps over five 8k batches at constant c=100, while the AOT native image stayed flat).
+    # Without this, level order doubles as a warmup curve and the JIT rows read cold.
+    if [ "${WARMUP:-0}" -gt 0 ]; then
+        echo "--- warmup ($WARMUP requests at c=$WARMUP_CONC, discarded)"
+        if [ "$LOADGEN" = k6 ]; then
+            docker run --rm --network host \
+                ${LOAD_CPUS:+--cpuset-cpus="$LOAD_CPUS"} \
+                -v "$K6_SCRIPT":/mix.js:ro \
+                -e BASE="http://127.0.0.1:${hostport}" \
+                -e LIST_PATH="${LISTPATHS[$i]}" \
+                -e ITEM_PATH="${ITEMPATHS[$i]}" \
+                -e CATEGORIES_PATH="${CATPATHS[$i]}" \
+                -e WRITE_PATH="${ITEMPATHS[$i]}" \
+                -e MAX_ID="$MAX_ID" \
+                "$K6_IMAGE" run --quiet --vus "$WARMUP_CONC" --iterations "$WARMUP" /mix.js \
+                >"$log.warmup.log" 2>&1 || true
+        else
+            "${AB[@]}" -n "$WARMUP" -c "$WARMUP_CONC" -s 60 -r "$url" >"$log.warmup.log" 2>&1 || true
+        fi
+    fi
+
     for c in $LEVELS; do
         out="$log.c$c.log"
         if [ "$LOADGEN" = k6 ]; then
@@ -483,6 +510,8 @@ print(fmt(d.get('rps')), fmt(d.get('failed_rate')), fmt(d.get('p50')), fmt(d.get
         echo "MODE=$MODE"
         echo "LIMITS=$LIMITS_DESC"
         echo "MIX=$MIX_DESC"
+        echo "WARMUP=$WARMUP"
+        echo "DEMONOTE=${NOTES[$i]}"
         echo "REQUESTS=$REQUESTS"
         echo "LEVELS=$LEVELS"
         echo "LOADGEN=$LOADGEN"
@@ -647,16 +676,36 @@ emit_environment() {
 human() { [ -n "${1:-}" ] && awk -v b="$1" 'BEGIN{printf "%.0f MiB", b/1048576}' || echo "-"; }
 getf() { sed -n "s/^$2=//p" "$RESULTDIR/$1.env" 2>/dev/null | head -1; }
 
+declare -A IDX
+for i in "${!NAMES[@]}"; do IDX[${NAMES[$i]}]=$i; done
+
+# Rows are ordered by throughput at this concurrency level, fastest first, so the tables rank
+# rather than just list. Rows with no number there (Failed) sort last.
+SORT_LEVEL="${SORT_LEVEL:-100}"
+case " $LEVELS " in *" $SORT_LEVEL "*) ;; *) SORT_LEVEL="$(awk '{print $1}' <<<"$LEVELS")" ;; esac
+
+sorted_names() {
+    local name value
+    for name in "${NAMES[@]}"; do
+        [ -f "$RESULTDIR/$name.env" ] || continue
+        value="$(getf "$name" "RPS_$SORT_LEVEL" | tr -d '*')"
+        case "$value" in ''|*[!0-9.]*) value=-1 ;; esac
+        printf '%s\t%s\n' "$value" "$name"
+    done | sort -k1,1gr | cut -f2
+}
+
 colspec="<28"; for c in $LEVELS; do colspec="$colspec,>10"; done
 NLEVELS=0; for c in $LEVELS; do NLEVELS=$((NLEVELS + 1)); done
 
 # Two-row header: "Concurrent connections" spanning the level columns, then the levels.
 level_header() {
-    echo "[cols=\"$colspec\"]"
+    local withnotes="${2:-}"
+    echo "[cols=\"$colspec${withnotes:+,<30}\"]"
     echo '|==='
-    echo "| ${NLEVELS}+^h| Concurrent connections"
+    echo "| ${NLEVELS}+^h| Concurrent connections ${withnotes:+|}"
     printf 'h| %s' "$1"
     for c in $LEVELS; do printf ' ^h| %s' "$c"; done
+    [ -n "$withnotes" ] && printf ' h| Notes'
     echo
     echo
 }
@@ -690,20 +739,21 @@ print(sqlite3.connect('file:' + sys.argv[1] + '?immutable=1', uri=True).execute(
         echo "load        ab $(ab -V 2>&1 | sed -n 's/.*Version \([0-9.]*\).*/\1/p' | head -1), single URL"
     fi
     echo "requests    -n $REQUESTS per level"
+    echo "warmup      $WARMUP requests at c=$WARMUP_CONC, discarded before measuring"
+    echo "row order   by throughput at c=$SORT_LEVEL, fastest first"
     echo "levels      -c $LEVELS"
     echo '----'
     echo
     emit_environment
     echo '== Requests per second'
     echo
-    level_header 'Platform'
-    for i in "${!NAMES[@]}"; do
-        name="${NAMES[$i]}"
-        [ -f "$RESULTDIR/$name.env" ] || continue
+    level_header 'Platform' notes
+    while read -r name; do
+        [ -n "$name" ] || continue
         printf '| %s' "$(getf "$name" STACK)"
         for c in $LEVELS; do printf ' | %s' "$(getf "$name" "RPS_$c" || true)"; done | sed 's/| $/| -/'
-        echo
-    done
+        printf ' | %s\n' "$(getf "$name" DEMONOTE)"
+    done < <(sorted_names)
     echo '|==='
     echo
 
@@ -711,16 +761,15 @@ print(sqlite3.connect('file:' + sys.argv[1] + '?immutable=1', uri=True).execute(
         echo '== Latency p95 (ms, lower is better)'
         echo
         level_header 'Platform'
-        for i in "${!NAMES[@]}"; do
-            name="${NAMES[$i]}"
-            [ -f "$RESULTDIR/$name.env" ] || continue
+        while read -r name; do
+            [ -n "$name" ] || continue
             printf '| %s' "$(getf "$name" STACK)"
             for c in $LEVELS; do
                 v="$(getf "$name" "P95_$c")"
                 printf ' | %s' "${v:--}"
             done
             echo
-        done
+        done < <(sorted_names)
         echo '|==='
         echo
     fi
@@ -735,13 +784,14 @@ print(sqlite3.connect('file:' + sys.argv[1] + '?immutable=1', uri=True).execute(
     echo '|==='
     echo '| Platform | Endpoint | Rows | Bytes | First 200 | Peak RSS | Image | Build | Measured'
     echo
-    for i in "${!NAMES[@]}"; do
-        name="${NAMES[$i]}"
-        [ -f "$RESULTDIR/$name.env" ] || continue
+    while read -r name; do
+        [ -n "$name" ] || continue
+        i="${IDX[$name]}"
         when="$(getf "$name" WHEN)"
         [ "$(getf "$name" LIMITS)" = "$LIMITS_DESC" ] || stale=1
         [ "$(getf "$name" LOADGEN)" = "$LOADGEN" ] || stale=1
         [ "$(getf "$name" MIX)" = "$MIX_DESC" ] || stale=1
+        [ "$(getf "$name" WARMUP)" = "$WARMUP" ] || stale=1
         printf '| %s | `%s` | %s | %s | %s | %s | %s | %s | %s\n' \
             "$(getf "$name" STACK)" "$(getf "$name" BPATH)" \
             "$(getf "$name" ROWS)" "$(getf "$name" BYTES)" \
@@ -750,7 +800,7 @@ print(sqlite3.connect('file:' + sys.argv[1] + '?immutable=1', uri=True).execute(
             "$(human "$(getf "$name" IMGSIZE)")" \
             "$(v=$(getf "$name" BUILD); [ -n "$v" ] && echo "${v}s" || echo '-')" \
             "${when%%T*}"
-    done
+    done < <(sorted_names)
     echo '|==='
     echo
 
