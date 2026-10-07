@@ -3,7 +3,7 @@ import request from "supertest";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { createTestApp } from "./test-app";
 
-// The real Nest app (all modules, global ValidationPipe) on a temp copy of demo.sqlite.
+// The real Nest app (all modules, global ValidationPipe) on the PostgreSQL database in DATABASE_URL.
 // The only write is update_content on content 2; afterEach puts its original text back.
 let app: INestApplication;
 let close: () => Promise<void>;

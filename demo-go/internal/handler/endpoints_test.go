@@ -6,37 +6,64 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"demo-go/internal/handler"
 	"demo-go/internal/repository"
 	"demo-go/internal/service"
 )
 
-// The same 16 cases exist in every demo-*/ project. They run against a copy of the repo's
-// demo.sqlite (built by db/generate.sql): 100 categories in 3 levels, 100,000 contents.
+// The same 16 cases exist in every demo-*/ project. They run against the PostgreSQL database
+// named by DATABASE_URL (../test.sh hands over a fresh clone of demo_template, built by
+// db/generate.sql): 100 categories in 3 levels, 100,000 contents.
 
-// newServer wires the real router, services and repositories to a fresh copy of demo.sqlite.
+var (
+	dbOnce sync.Once
+	testDB *gorm.DB
+	dbErr  error
+)
+
+// database opens one shared pool for the whole test binary, as the server does.
+func database(t *testing.T) *gorm.DB {
+	t.Helper()
+	dbOnce.Do(func() {
+		dsn := os.Getenv("DATABASE_URL")
+		if dsn == "" {
+			dsn = "postgres://bench:bench@127.0.0.1:5432/demo"
+		}
+		testDB, dbErr = repository.Open(dsn, 4, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	})
+	require.NoError(t, dbErr)
+	return testDB
+}
+
+// newServer wires the real router, services and repositories to the test database.
 func newServer(t *testing.T) http.Handler {
 	t.Helper()
-	data, err := os.ReadFile("../../../demo.sqlite")
-	require.NoError(t, err)
-	path := filepath.Join(t.TempDir(), "demo.sqlite")
-	require.NoError(t, os.WriteFile(path, data, 0o600))
-
+	db := database(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	db, err := repository.Open(path, log)
-	require.NoError(t, err)
-
 	return handler.NewRouter(log,
 		handler.NewCategoryHandler(service.NewCategoryService(repository.NewCategoryRepository(db))),
 		handler.NewContentHandler(service.NewContentService(repository.NewContentRepository(db))),
 	)
+}
+
+// restoreContent puts back the text of one content row once the test that rewrites it is done,
+// so the shared database ends the run with the template's data.
+func restoreContent(t *testing.T, id int) {
+	t.Helper()
+	db := database(t)
+	var original string
+	require.NoError(t, db.Raw("SELECT content FROM content WHERE id = ?", id).Row().Scan(&original))
+	t.Cleanup(func() {
+		require.NoError(t, db.Table("content").Where("id = ?", id).Update("content", original).Error)
+	})
 }
 
 func send(srv http.Handler, method, url, body string) *httptest.ResponseRecorder {
@@ -217,6 +244,7 @@ func TestItemNonNumericId(t *testing.T) {
 
 func TestUpdateContent(t *testing.T) {
 	srv := newServer(t)
+	restoreContent(t, 2)
 
 	res := send(srv, "PUT", "/contents/2", `{"content": "updated text"}`)
 

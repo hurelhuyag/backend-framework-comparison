@@ -11,9 +11,10 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
-            database_url: env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://demo.sqlite".to_owned()),
+            database_url: env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://bench:bench@127.0.0.1:5432/demo".to_owned()),
             port: parse_or("PORT", 8081)?,
-            max_connections: parse_or("DB_MAX_CONNECTIONS", 16)?,
+            max_connections: parse_or("DB_POOL_SIZE", 32)?,
         })
     }
 }

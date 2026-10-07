@@ -13,9 +13,9 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddPersistence(this IServiceCollection services)
     {
-        var dbPath = Environment.GetEnvironmentVariable("DEMO_DB") ?? "demo.sqlite";
+        var connectionString = DatabaseSettings.ConnectionString();
 
-        services.AddDbContextPool<DemoContext>(options => options.UseSqlite($"Data Source={dbPath}"));
+        services.AddDbContextPool<DemoContext>(options => options.UseNpgsql(connectionString));
         services.AddScoped<IContentRepository, ContentRepository>();
         services.AddScoped<ICategoryRepository, CategoryRepository>();
 

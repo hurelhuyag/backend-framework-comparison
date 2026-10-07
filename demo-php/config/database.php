@@ -16,7 +16,7 @@ return [
     |
     */
 
-    'default' => env('DB_CONNECTION', 'sqlite'),
+    'default' => env('DB_CONNECTION', 'pgsql'),
 
     /*
     |--------------------------------------------------------------------------
@@ -30,18 +30,6 @@ return [
     */
 
     'connections' => [
-
-        'sqlite' => [
-            'driver' => 'sqlite',
-            'url' => env('DB_URL'),
-            'database' => env('DB_DATABASE', database_path('database.sqlite')),
-            'prefix' => '',
-            'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
-            'busy_timeout' => null,
-            'journal_mode' => null,
-            'synchronous' => null,
-            'transaction_mode' => 'DEFERRED',
-        ],
 
         'mysql' => [
             'driver' => 'mysql',
@@ -86,16 +74,22 @@ return [
         'pgsql' => [
             'driver' => 'pgsql',
             'url' => env('DB_URL'),
-            'host' => env('DB_HOST', '127.0.0.1'),
-            'port' => env('DB_PORT', '5432'),
-            'database' => env('DB_DATABASE', 'laravel'),
-            'username' => env('DB_USERNAME', 'root'),
-            'password' => env('DB_PASSWORD', ''),
+            // DB_* win when set; otherwise the libpq PG* variables the harness passes.
+            'host' => env('DB_HOST', env('PGHOST', '127.0.0.1')),
+            'port' => env('DB_PORT', env('PGPORT', '5432')),
+            'database' => env('DB_DATABASE', env('PGDATABASE', 'demo')),
+            'username' => env('DB_USERNAME', env('PGUSER', 'bench')),
+            'password' => env('DB_PASSWORD', env('PGPASSWORD', 'bench')),
             'charset' => env('DB_CHARSET', 'utf8'),
             'prefix' => '',
             'prefix_indexes' => true,
             'search_path' => 'public',
             'sslmode' => 'prefer',
+            // php-fpm runs 32 static workers; each keeps ONE persistent connection across
+            // requests (no pool), so the server sees at most 32 app connections.
+            'options' => [
+                PDO::ATTR_PERSISTENT => true,
+            ],
         ],
 
         'sqlsrv' => [

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Node / NestJS (Express) / Prisma. DATABASE_URL is forced to the repo-root demo.sqlite so this
-# does not depend on the absolute path baked into .env.
+# Node / NestJS (Express) / Prisma on PostgreSQL. DATABASE_URL (+ PG* for parity with the other demos)
+# defaults to the local bench server; PrismaService appends connection_limit=$DB_POOL_SIZE to it.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(dirname "$HERE")"
 
 NAME="${NAME:-nodejs}"
 STACK="${STACK:-Node/NestJS/Prisma}"
@@ -15,8 +14,15 @@ ITEM_PATH="${ITEM_PATH-}"
 [ -n "$ITEM_PATH" ] || ITEM_PATH='/api/contents/{id}'
 CATEGORIES_PATH="${CATEGORIES_PATH-}"
 [ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/api/categories'
-DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
-export DATABASE_URL="${DATABASE_URL:-file:$DEMO_DB}"
+export PGHOST="${PGHOST:-127.0.0.1}"
+export PGPORT="${PGPORT:-5432}"
+export PGUSER="${PGUSER:-bench}"
+export PGPASSWORD="${PGPASSWORD:-bench}"
+export PGDATABASE="${PGDATABASE:-demo}"
+export DATABASE_URL="${DATABASE_URL:-postgres://bench:bench@127.0.0.1:5432/demo}"
+# Server processes (one JS thread each), one per core of the 4-core container.
+export WORKERS="${WORKERS:-4}"
+export DB_POOL_SIZE="${DB_POOL_SIZE:-32}"
 
 case "${1:-start}" in
     meta)

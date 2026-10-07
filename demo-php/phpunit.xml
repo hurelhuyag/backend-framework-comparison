@@ -27,9 +27,9 @@
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="CACHE_STORE" value="array"/>
-        <!-- force: never let an inherited DB_DATABASE (e.g. the real demo.sqlite) leak into tests. -->
-        <env name="DB_CONNECTION" value="sqlite" force="true"/>
-        <env name="DB_DATABASE" value=":memory:" force="true"/>
+        <!-- The tests run against the PostgreSQL database named by the PG* variables (test.sh passes a
+             fresh clone of demo_template). DB_URL is blanked so nothing overrides them. -->
+        <env name="DB_CONNECTION" value="pgsql" force="true"/>
         <env name="DB_URL" value="" force="true"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>

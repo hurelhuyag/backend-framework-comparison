@@ -2,7 +2,6 @@
 # Rust / Axum / SeaORM. Customize by editing the vars below or exporting them.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(dirname "$HERE")"
 
 NAME="${NAME:-rust}"
 STACK="${STACK:-Rust1.99/Axum0.8/SeaORM2.0}"
@@ -14,7 +13,13 @@ ITEM_PATH="${ITEM_PATH-}"
 [ -n "$ITEM_PATH" ] || ITEM_PATH='/api/contents/{id}'
 CATEGORIES_PATH="${CATEGORIES_PATH-}"
 [ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/api/categories'
-DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
+PGHOST="${PGHOST:-127.0.0.1}"
+PGPORT="${PGPORT:-5432}"
+PGUSER="${PGUSER:-bench}"
+PGPASSWORD="${PGPASSWORD:-bench}"
+PGDATABASE="${PGDATABASE:-demo}"
+DATABASE_URL="${DATABASE_URL:-postgres://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE}"
+DB_POOL_SIZE="${DB_POOL_SIZE:-32}"
 CARGO="${CARGO:-$HOME/.cargo/bin/cargo}"
 
 case "${1:-start}" in
@@ -30,7 +35,7 @@ case "${1:-start}" in
         ;;
     start)
         cd "$HERE"
-        exec env DATABASE_URL="sqlite://$DEMO_DB" PORT="$PORT" ./target/release/demo-rust
+        exec env DATABASE_URL="$DATABASE_URL" DB_POOL_SIZE="$DB_POOL_SIZE" PORT="$PORT" ./target/release/demo-rust
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2

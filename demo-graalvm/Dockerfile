@@ -20,7 +20,9 @@ RUN apt-get update \
 WORKDIR /app/demo-graalvm
 COPY demo-graalvm/run.sh ./run.sh
 COPY --from=build /src/target/demo-hibernate-sqlite ./demo-graalvm-app
-COPY demo.sqlite /app/demo.sqlite
 ENV PORT=8083
+ENV DATABASE_URL=postgres://bench:bench@127.0.0.1:5432/demo \
+    PGHOST=127.0.0.1 PGPORT=5432 PGUSER=bench PGPASSWORD=bench PGDATABASE=demo \
+    DB_POOL_SIZE=32
 EXPOSE 8083
 CMD ["./run.sh", "start"]

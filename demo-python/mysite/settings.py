@@ -76,12 +76,24 @@ WSGI_APPLICATION = 'mysite.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+# PostgreSQL via psycopg 3, configured from the libpq PG* variables (run.sh and the Dockerfile set
+# the defaults; the harness and test.sh point them at another database). CONN_MAX_AGE = None keeps
+# one persistent connection per gunicorn sync worker; there is no pool, since a sync worker serves
+# one request at a time. The tables are unmanaged (managed = False): nothing here migrates them.
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': os.environ.get('DEMO_DB', BASE_DIR / 'demo.sqlite'),
+        'ENGINE': 'django.db.backends.postgresql',
+        'HOST': os.environ.get('PGHOST', '127.0.0.1'),
+        'PORT': os.environ.get('PGPORT', '5432'),
+        'USER': os.environ.get('PGUSER', 'bench'),
+        'PASSWORD': os.environ.get('PGPASSWORD', 'bench'),
+        'NAME': os.environ.get('PGDATABASE', 'demo'),
+        'CONN_MAX_AGE': None,
     }
 }
+
+# `manage.py test` runs against the database above as-is (see core/test_runner.py).
+TEST_RUNNER = 'core.test_runner.ExistingDatabaseRunner'
 
 
 # Password validation

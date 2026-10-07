@@ -34,7 +34,7 @@ func run() error {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(log)
 
-	db, err := repository.Open(cfg.DBPath, log)
+	db, err := repository.Open(cfg.DatabaseURL, cfg.DBPoolSize, log)
 	if err != nil {
 		return err
 	}

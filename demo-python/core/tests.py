@@ -1,41 +1,17 @@
 """Endpoint tests for the Django/DRF demo. Run: python manage.py test
 
-Tests run against the real dataset in the repo-root demo.sqlite (built by db/generate.sql;
-override the path with DEMO_DB). Django's test runner uses its own in-memory database, so
-setUpTestData copies the schema and every row from a read-only connection to demo.sqlite
-into it. The original file is never modified.
+Tests run against the PostgreSQL database given by the PG* variables (test.sh hands every run a
+fresh clone of demo_template, built by db/generate.sql). The project's test runner
+(core/test_runner.py) uses that database as-is instead of creating test_<NAME>, so the tests see
+the real dataset.
 """
 
-import os
-import sqlite3
-
-from django.conf import settings
-from django.db import connection
 from rest_framework.test import APITestCase
 
-DEMO_DB = os.environ.get('DEMO_DB') or str(settings.BASE_DIR.parent / 'demo.sqlite')
+from core.models import Content
 
 
 class EndpointTests(APITestCase):
-    @classmethod
-    def setUpTestData(cls):
-        source = sqlite3.connect(f'file:{DEMO_DB}?mode=ro', uri=True)
-        target = connection.connection  # the raw sqlite3 connection of the test database
-        for (sql,) in source.execute(
-            "select sql from sqlite_master where name in ('category', 'content', 'content_category_id')"
-            " order by type desc, name"
-        ):
-            target.execute(sql)
-        target.executemany(
-            'insert into category (id, parent_id, name) values (?, ?, ?)',
-            source.execute('select id, parent_id, name from category'),
-        )
-        target.executemany(
-            'insert into content (id, category_id, content) values (?, ?, ?)',
-            source.execute('select id, category_id, content from content'),
-        )
-        source.close()
-
     def test_list_default(self):
         response = self.client.get('/contents/')
         self.assertEqual(response.status_code, 200)
@@ -371,6 +347,10 @@ class EndpointTests(APITestCase):
         self.assertEqual(response.json(), {'detail': 'Not found.'})
 
     def test_update_content(self):
+        # APITestCase rolls the write back after the test; restore it explicitly as well.
+        original = Content.objects.get(pk=2).content
+        self.addCleanup(Content.objects.filter(pk=2).update, content=original)
+
         response = self.client.put('/contents/2/', {'content': 'updated text'}, format='json')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(

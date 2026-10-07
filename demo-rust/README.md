@@ -1,7 +1,7 @@
-# demo-rust — Rust / Axum / SeaORM / SQLite
+# demo-rust — Rust / Axum / SeaORM / PostgreSQL
 
 Sixth-language entry in the comparison: **Axum 0.8** (most-downloaded Rust web framework) +
-**SeaORM 2.0** (the popular async Rust ORM) against the same `demo.sqlite` as every other demo.
+**SeaORM 2.0** (the popular async Rust ORM) against the same PostgreSQL dataset (`db/generate.sql`) as every other demo.
 
 SeaORM is used deliberately instead of raw `sqlx`. Every other demo in this repo goes through an ORM
 (GORM, Hibernate, Prisma, Eloquent, Django ORM), so hand-written SQL here would measure a different
@@ -29,7 +29,7 @@ src/entities/      SeaORM entities
 |--------------------|----------------------------------------------|
 | HTTP               | axum 0.8, tower-http                         |
 | Validation         | validator                                    |
-| ORM                | sea-orm 2.0 (sqlx-sqlite)                    |
+| ORM                | sea-orm 2.0 (sqlx-postgres)                  |
 | Logging / tracing  | tracing, tracing-subscriber (JSON, EnvFilter)|
 | Errors             | thiserror (app), anyhow (main)               |
 | DI / mapping       | constructor injection via `Arc<dyn Trait>`, `From` impls |
@@ -38,7 +38,7 @@ src/entities/      SeaORM entities
 
 From the repo root, `./run.sh --only rust` builds the image and benchmarks it in a container
 capped at 4 CPU cores / 4 GiB RAM. The `Dockerfile` here builds with the **repo root as context**
-so it can copy `demo.sqlite` into the image:
+(the image holds no data; it connects to the shared Postgres started by `db/postgres.sh start`):
 
 ```sh
 docker build -f demo-rust/Dockerfile -t bfc-rust:bench .   # from the repo root
@@ -54,15 +54,17 @@ source "$HOME/.cargo/env"
 # from THIS directory
 cargo build --release
 
-# run from the REPO ROOT, where demo.sqlite lives
-cd .. && ./demo-rust/target/release/demo-rust
+# needs the Postgres from db/postgres.sh (127.0.0.1:5432, database `demo`)
+./target/release/demo-rust
 ```
 
-Overridable via env: `DATABASE_URL` (default `sqlite://demo.sqlite`), `PORT` (default `8081`),
-`DB_MAX_CONNECTIONS` (default `16`), `RUST_LOG` (default `warn`; `debug` turns on per-request tracing).
+Overridable via env: `DATABASE_URL` (default `postgres://bench:bench@127.0.0.1:5432/demo`;
+`run.sh` builds it from `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` when unset),
+`PORT` (default `8081`), `DB_POOL_SIZE` (pool `max_connections`, default `32`),
+`RUST_LOG` (default `warn`; `debug` turns on per-request tracing).
 
 ```sh
-DATABASE_URL=sqlite://demo.sqlite PORT=8081 ./demo-rust/target/release/demo-rust
+DATABASE_URL=postgres://bench:bench@127.0.0.1:5432/demo PORT=8081 ./target/release/demo-rust
 ```
 
 ## Endpoints
@@ -91,16 +93,19 @@ Run from the **repo root**:
 ./test.sh rust
 ```
 
-This builds the `test` stage of `demo-rust/Dockerfile` (toolchain, dev-dependencies, sources and its
-own copy of `demo.sqlite` at `/repo/demo.sqlite`) and runs `cargo test` in a fresh container, so the
-exit code is the result. Nothing is mounted from the host, so the repo's database is never read or
-written. A plain `docker build -f demo-rust/Dockerfile .` still builds only the runtime image.
+This builds the `test` stage of `demo-rust/Dockerfile` (toolchain, dev-dependencies, sources) and
+runs `cargo test` in a fresh container against `DATABASE_URL`, which test.sh points at a fresh clone
+of `demo_template` (`test_rust`), so the exit code is the result. A plain
+`docker build -f demo-rust/Dockerfile .` still builds only the runtime image.
 
 `src/tests.rs` drives the real router, services and SeaORM repositories in-process
-(`tower::ServiceExt::oneshot`), each test against its own temp copy of `../demo.sqlite`. The same 16
-cases exist in every demo, and each one compares the full literal JSON body.
+(`tower::ServiceExt::oneshot`) against the database in `DATABASE_URL`. The same 16 cases exist in
+every demo, and each one compares the full literal JSON body. The tests run in parallel; the one
+write (`update_content` on content 2) holds a lock exclusively and restores the row afterwards, so
+no other test sees it.
 
-Local dev with a Rust toolchain: `cargo test` in this directory (reads `../demo.sqlite`, copies it per test).
+Local dev with a Rust toolchain: `db/postgres.sh reset dev_rust`, then
+`DATABASE_URL=postgres://bench:bench@127.0.0.1:5432/dev_rust cargo test` in this directory.
 
 ## Benchmark command
 
@@ -119,8 +124,8 @@ ab -n 10000 -c 10000 http://127.0.0.1:8081/api/contents
   SeaORM's typed `and_also_related` cannot alias, so each level up is one batched `IN (...)` query
   until no unknown parent ids remain (3 levels: at most 2 extra). `/categories` is one query; the
   chains are assembled in memory. Prisma and Django produce the same shape for nested relations.
-- **Pool size is 16** (`max_connections`), vs Hikari's default 10 in the Spring demo. Worth aligning
-  before publishing a table — SQLite read concurrency is sensitive to this.
+- **Pool size is `DB_POOL_SIZE` (32)** (`max_connections`), the same budget every demo gets; the
+  other pool knobs stay at SeaORM/sqlx defaults.
 - **`sqlx_logging(false)`** is set. SeaORM logs every statement at debug by default, which would cost
   far more than the other demos' WARN/ERROR-level logging.
 - Release profile uses `lto = "fat"`, `codegen-units = 1`. First release build takes a few minutes.

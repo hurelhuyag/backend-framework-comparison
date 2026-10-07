@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -15,7 +15,7 @@ model category {
   children       category[] @relation("categoryTocategory")
   content        content[]
 
-  @@unique([parent_id, name], map: "sqlite_autoindex_category_1")
+  @@unique([parent_id, name], map: "category_parent_id_name_key")
 }
 
 model content {

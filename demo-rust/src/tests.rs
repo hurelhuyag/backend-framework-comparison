@@ -1,57 +1,79 @@
-//! Endpoint tests. The real router, services and SeaORM repositories run in-process against a
-//! per-test COPY of the repo-root demo.sqlite (built by db/generate.sql); the original is never
-//! opened. Each test: request, expected status, the full expected JSON body, exact comparison.
-
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+//! Endpoint tests. The real router, services and SeaORM repositories run in-process against the
+//! PostgreSQL database in DATABASE_URL (test.sh hands over a fresh clone of demo_template, built by
+//! db/generate.sql). Each test: request, expected status, the full expected JSON body, exact comparison.
+//!
+//! The tests share that one database and cargo runs them in parallel, so `update_content` (the only
+//! write, on content 2) takes `DB_LOCK` exclusively and restores the row before releasing it; every
+//! other test holds it shared and never sees the write.
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
-use sea_orm::{ConnectOptions, Database};
+use sea_orm::sea_query::Expr;
+use sea_orm::{ColumnTrait, ConnectOptions, Database, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::{json, Value};
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tower::ServiceExt;
 
+use crate::entities::content;
 use crate::routes;
 use crate::state::AppState;
 
-/// The real router over a private copy of demo.sqlite; the copy is deleted when the test ends.
-struct TestApp {
-    router: Router,
-    db_copy: PathBuf,
+/// Readers share it; the one writing test holds it exclusively (tokio's lock works across the
+/// per-test runtimes and is not poisoned by a failing test).
+static DB_LOCK: RwLock<()> = RwLock::const_new(());
+
+#[allow(dead_code)] // held only for its Drop
+enum DbGuard {
+    Shared(RwLockReadGuard<'static, ()>),
+    Exclusive(RwLockWriteGuard<'static, ()>),
 }
 
-impl Drop for TestApp {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.db_copy);
+/// The real router over the test database, plus the lock guard held for the whole test.
+struct TestApp {
+    router: Router,
+    db: DatabaseConnection,
+    _guard: DbGuard,
+}
+
+impl std::ops::Deref for TestApp {
+    type Target = Router;
+
+    fn deref(&self) -> &Router {
+        &self.router
     }
 }
 
-async fn app() -> TestApp {
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let original = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../demo.sqlite");
-    let db_copy = std::env::temp_dir().join(format!(
-        "demo-rust-test-{}-{}.sqlite",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::SeqCst)
-    ));
-    std::fs::copy(&original, &db_copy).expect("copy ../demo.sqlite (run db/generate.sql first)");
+async fn connect() -> DatabaseConnection {
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must point at a clone of demo_template");
+    let mut options = ConnectOptions::new(url);
+    options.max_connections(2).sqlx_logging(false);
+    Database::connect(options).await.unwrap()
+}
 
-    let mut options = ConnectOptions::new(format!("sqlite://{}?mode=rw", db_copy.display()));
-    options.max_connections(1).sqlx_logging(false);
-    let db = Database::connect(options).await.unwrap();
-    TestApp { router: routes::router(AppState::new(db)), db_copy }
+/// A read-only test: shares the database with the other read-only tests.
+async fn app() -> TestApp {
+    let guard = DbGuard::Shared(DB_LOCK.read().await);
+    let db = connect().await;
+    TestApp { router: routes::router(AppState::new(db.clone())), db, _guard: guard }
+}
+
+/// A writing test: no other test runs while it holds the database.
+async fn exclusive_app() -> TestApp {
+    let guard = DbGuard::Exclusive(DB_LOCK.write().await);
+    let db = connect().await;
+    TestApp { router: routes::router(AppState::new(db.clone())), db, _guard: guard }
 }
 
 /// Sends one request and returns the status and the parsed JSON body.
-async fn send(app: &TestApp, method: Method, uri: &str, body: Option<&str>) -> (StatusCode, Value) {
+async fn send(router: &Router, method: Method, uri: &str, body: Option<&str>) -> (StatusCode, Value) {
     let mut request = Request::builder().method(method).uri(uri);
     if body.is_some() {
         request = request.header(header::CONTENT_TYPE, "application/json");
     }
     let request = request.body(body.map(|b| Body::from(b.to_owned())).unwrap_or_else(Body::empty)).unwrap();
-    let response = app.router.clone().oneshot(request).await.unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     (status, serde_json::from_slice(&bytes).unwrap())
@@ -509,36 +531,52 @@ async fn item_non_numeric_id() {
 
 #[tokio::test]
 async fn update_content() {
-    let app = app().await;
+    let app = exclusive_app().await;
+    let original = content::Entity::find_by_id(2).one(&app.db).await.unwrap().expect("content 2").content;
 
-    let (status, body) = send(&app, Method::PUT, "/api/contents/2", Some(r#"{"content":"updated text"}"#)).await;
+    // The assertions run in a task so a failure still reaches the restore below (under the lock).
+    let router = app.router.clone();
+    let outcome = tokio::spawn(async move {
+        let (status, body) = send(&router, Method::PUT, "/api/contents/2", Some(r#"{"content":"updated text"}"#)).await;
 
-    assert_eq!(status, StatusCode::OK);
-    // Surprising: the PUT response has "category": null even though category_id is 321.
-    assert_eq!(body, json!({"id": 2, "category_id": 321, "content": "updated text", "category": null}));
+        assert_eq!(status, StatusCode::OK);
+        // Surprising: the PUT response has "category": null even though category_id is 321.
+        assert_eq!(body, json!({"id": 2, "category_id": 321, "content": "updated text", "category": null}));
 
-    let (status, body) = send(&app, Method::GET, "/api/contents/2", None).await;
+        let (status, body) = send(&router, Method::GET, "/api/contents/2", None).await;
 
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        body,
-        json!({
-            "id": 2,
-            "category_id": 321,
-            "content": "updated text",
-            "category": {
-                "id": 321,
-                "parent_id": 32,
-                "name": "NBA",
-                "parent": {
-                    "id": 32,
-                    "parent_id": 3,
-                    "name": "Basketball",
-                    "parent": {"id": 3, "parent_id": null, "name": "Sports", "parent": null}
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            json!({
+                "id": 2,
+                "category_id": 321,
+                "content": "updated text",
+                "category": {
+                    "id": 321,
+                    "parent_id": 32,
+                    "name": "NBA",
+                    "parent": {
+                        "id": 32,
+                        "parent_id": 3,
+                        "name": "Basketball",
+                        "parent": {"id": 3, "parent_id": null, "name": "Sports", "parent": null}
+                    }
                 }
-            }
-        })
-    );
+            })
+        );
+    })
+    .await;
+
+    content::Entity::update_many()
+        .col_expr(content::Column::Content, Expr::value(original))
+        .filter(content::Column::Id.eq(2))
+        .exec(&app.db)
+        .await
+        .unwrap();
+    if let Err(error) = outcome {
+        std::panic::resume_unwind(error.into_panic());
+    }
 }
 
 #[tokio::test]

@@ -18,32 +18,32 @@ RUN composer dump-autoload --optimize --no-dev --classmap-authoritative --no-scr
 
 # Test stage: `docker build -f demo-php/Dockerfile --target test .` then `docker run --rm <image>`.
 # A plain build never reaches it (the final stage does not depend on it). Dev dependencies are
-# installed here, inside the build; the tests read their own copy of demo.sqlite at /repo/demo.sqlite
-# (= ../demo.sqlite from the app) and copy it again to a temp file per test.
+# installed here, inside the build. The tests connect to whatever database the PG* variables name
+# (test.sh hands them a fresh clone of demo_template) and restore the one row they write.
 FROM php:8.4-cli-bookworm AS test
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git unzip \
+    && apt-get install -y --no-install-recommends git unzip libpq-dev \
+    && docker-php-ext-install -j"$(nproc)" pdo_pgsql \
     && rm -rf /var/lib/apt/lists/*
-RUN php -m | grep -qi '^pdo_sqlite$'
+RUN php -m | grep -qi '^pdo_pgsql$'
 WORKDIR /repo/demo-php
 COPY demo-php/composer.json demo-php/composer.lock ./
 RUN composer install --no-interaction --no-scripts --no-autoloader --prefer-dist
 COPY demo-php/ ./
 RUN composer dump-autoload --no-scripts
-COPY demo.sqlite /repo/demo.sqlite
 CMD ["vendor/bin/phpunit", "--colors=never", "--testdox"]
 
 FROM php:8.4-fpm-bookworm
+# pdo_pgsql is compiled against libpq-dev, which is purged again; only the libpq5 runtime library
+# stays. Assert the driver is present so a missing one fails the build instead of the benchmark.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nginx libsqlite3-dev \
-    && docker-php-ext-install -j"$(nproc)" opcache \
+    && apt-get install -y --no-install-recommends nginx libpq5 libpq-dev \
+    && docker-php-ext-install -j"$(nproc)" opcache pdo_pgsql \
+    && apt-mark manual libpq5 \
+    && apt-get purge -y --auto-remove libpq-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# pdo_sqlite ships enabled in the official php images; build it only if that ever changes,
-# then assert it is present so a missing driver fails the build instead of the benchmark.
-RUN php -m | grep -qi '^pdo_sqlite$' || docker-php-ext-install -j"$(nproc)" pdo_sqlite
-RUN php -m | grep -qi '^pdo_sqlite$'
+RUN php -m | grep -qi '^pdo_pgsql$'
 
 COPY demo-php/docker/nginx.conf /etc/nginx/nginx.conf
 COPY demo-php/docker/zz-pool.conf /usr/local/etc/php-fpm.d/zz-pool.conf
@@ -51,17 +51,18 @@ COPY demo-php/docker/opcache.ini /usr/local/etc/php/conf.d/zz-opcache.ini
 
 WORKDIR /app/demo-php
 COPY --from=vendor /src ./
-COPY demo.sqlite /app/demo.sqlite
-# php-fpm runs as www-data, and SQLite in WAL mode creates -wal/-shm beside the database,
-# so that user needs write access to the file AND its directory - otherwise even a plain
-# SELECT fails with "attempt to write a readonly database".
-RUN chown www-data:www-data /app /app/demo.sqlite
 
 ENV APP_ENV=production \
     APP_DEBUG=false \
     LOG_CHANNEL=stderr \
-    DB_CONNECTION=sqlite \
-    DB_DATABASE=/app/demo.sqlite \
+    DB_CONNECTION=pgsql \
+    DATABASE_URL=postgres://bench:bench@127.0.0.1:5432/demo \
+    PGHOST=127.0.0.1 \
+    PGPORT=5432 \
+    PGUSER=bench \
+    PGPASSWORD=bench \
+    PGDATABASE=demo \
+    DB_POOL_SIZE=32 \
     PHP_SERVER=fpm \
     PORT=8001
 
@@ -76,8 +77,9 @@ RUN mkdir -p bootstrap/cache \
     && chmod -R 775 storage bootstrap/cache \
     && cp .env.example .env \
     && php artisan key:generate --force \
-    && php artisan package:discover --ansi \
-    && php artisan config:cache
+    && php artisan package:discover --ansi
+# No config:cache here: it would freeze the PG* defaults above. run.sh start caches the config
+# from the container's actual environment.
 
 EXPOSE 8001
 CMD ["./run.sh", "start"]

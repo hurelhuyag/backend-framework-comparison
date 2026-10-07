@@ -14,7 +14,13 @@ ITEM_PATH="${ITEM_PATH-}"
 [ -n "$ITEM_PATH" ] || ITEM_PATH='/api/contents/{id}'
 CATEGORIES_PATH="${CATEGORIES_PATH-}"
 [ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/api/categories'
-DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
+PGHOST="${PGHOST:-127.0.0.1}"
+PGPORT="${PGPORT:-5432}"
+PGUSER="${PGUSER:-bench}"
+PGPASSWORD="${PGPASSWORD:-bench}"
+PGDATABASE="${PGDATABASE:-demo}"
+DATABASE_URL="${DATABASE_URL:-postgres://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE}"
+DB_POOL_SIZE="${DB_POOL_SIZE:-32}"
 DOTNET="${DOTNET:-dotnet}"
 
 case "${1:-start}" in
@@ -30,7 +36,9 @@ case "${1:-start}" in
         ;;
     start)
         cd "$HERE"
-        exec env DEMO_DB="$DEMO_DB" ASPNETCORE_URLS="http://0.0.0.0:$PORT" ./publish/demo-dotnet
+        exec env DATABASE_URL="$DATABASE_URL" PGHOST="$PGHOST" PGPORT="$PGPORT" PGUSER="$PGUSER" \
+            PGPASSWORD="$PGPASSWORD" PGDATABASE="$PGDATABASE" DB_POOL_SIZE="$DB_POOL_SIZE" \
+            ASPNETCORE_URLS="http://0.0.0.0:$PORT" ./publish/demo-dotnet
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2

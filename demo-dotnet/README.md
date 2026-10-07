@@ -1,9 +1,9 @@
-# demo-dotnet — C# / ASP.NET Core / EF Core / SQLite
+# demo-dotnet — C# / ASP.NET Core / EF Core / PostgreSQL
 
-Seventh entry in the comparison: **ASP.NET Core 10 Minimal APIs** + **EF Core 10** against the same
-`demo.sqlite` as every other demo.
+Seventh entry in the comparison: **ASP.NET Core 10 Minimal APIs** + **EF Core 10** (Npgsql provider) against the same
+PostgreSQL dataset as every other demo (`demo_template`, built by `db/generate.sql`).
 
-EF Core is used rather than Dapper or raw `Microsoft.Data.Sqlite`, for the same reason the Rust demo
+EF Core is used rather than Dapper or raw `Npgsql`, for the same reason the Rust demo
 uses SeaORM instead of raw `sqlx`: every other demo here goes through a full ORM (Hibernate, GORM,
 Prisma, Eloquent, Django ORM, SeaORM), so hand-written SQL would measure a different workload.
 
@@ -13,7 +13,7 @@ Prisma, Eloquent, Django ORM, SeaORM), so hand-written SQL would measure a diffe
 ./run.sh --only dotnet            # from the repo root
 ```
 
-The `Dockerfile` builds with the **repo root as context** so it can copy `demo.sqlite`:
+The `Dockerfile` builds with the **repo root as context** (the image does not contain the dataset):
 
 ```sh
 docker build -f demo-dotnet/Dockerfile -t bfc-dotnet:bench .
@@ -24,10 +24,13 @@ docker build -f demo-dotnet/Dockerfile -t bfc-dotnet:bench .
 ```sh
 cd demo-dotnet
 dotnet publish -c Release -o ./publish
-cd .. && DEMO_DB=$PWD/demo.sqlite ASPNETCORE_URLS=http://0.0.0.0:8082 ./demo-dotnet/publish/demo-dotnet
+DATABASE_URL=postgres://bench:bench@127.0.0.1:5432/demo ASPNETCORE_URLS=http://0.0.0.0:8082 ./publish/demo-dotnet
 ```
 
-Overridable via env: `DEMO_DB` (default `demo.sqlite`), `PORT` (default `8082`).
+Overridable via env: `DATABASE_URL` (default `postgres://bench:bench@127.0.0.1:5432/demo`; when unset,
+`PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` are used, defaults `127.0.0.1`/`5432`/`bench`/`bench`/`demo`),
+`DB_POOL_SIZE` (default `32`), `PORT` (default `8082`). The connection string is built in
+`Data/DatabaseSettings.cs`.
 
 ## Endpoints
 
@@ -53,8 +56,10 @@ Defaults match the Django/NextJS demos: page 1, size 20, capped at 100. Ordered 
   language one.
 - **`AsNoTracking()`** is set, matching the read-only intent of the endpoint (Hibernate uses a
   read-only transaction; Prisma and Django do not track either).
-- **`AddDbContextPool`** pools DbContext instances, and `Microsoft.Data.Sqlite` pools connections by
-  default — comparable to Hikari in the Spring demo and the SeaORM pool in the Rust demo.
+- **`AddDbContextPool`** pools DbContext instances, and Npgsql pools connections with
+  `Maximum Pool Size = DB_POOL_SIZE` (32) — the same budget as Hikari in the Spring demo and the
+  SeaORM pool in the Rust demo. Other pool knobs stay at Npgsql defaults. `GSS Encryption Mode=Disable`
+  stops Npgsql 10 probing for a Kerberos library the image does not have.
 - **Logging is pinned to Warning.** ASP.NET Core logs every request at Information by default, which
   would charge this row for work no other demo does.
 
@@ -71,8 +76,9 @@ Run them from the repo root:
 ```
 
 This builds the `test` stage of the `Dockerfile` (`--target test`; a plain build skips it) and runs it.
-The stage copies `demo.sqlite` (built by `db/generate.sql`) into the image, and before every test the
-factory copies it again to a temp file that `DEMO_DB` points to, so no run touches the repo's database
-or shares one with another demo. The container's exit code is the test result.
+The tests connect to the database given by `DATABASE_URL` / `PG*`; test.sh hands them `test_dotnet`, a
+fresh clone of `demo_template`. The only write (the `UpdateContent` case on content 2) is restored before
+every test and when the run ends. The container's exit code is the test result.
 
-With a local .NET 10 SDK: `cd demo-dotnet/tests && dotnet test` (uses the repo-root `demo.sqlite` the same way).
+With a local .NET 10 SDK: `db/postgres.sh reset dev_dotnet`, then
+`cd demo-dotnet/tests && DATABASE_URL=postgres://bench:bench@127.0.0.1:5432/dev_dotnet dotnet test`.

@@ -3,7 +3,10 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
-DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
+export PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" PGUSER="${PGUSER:-bench}"
+export PGPASSWORD="${PGPASSWORD:-bench}" PGDATABASE="${PGDATABASE:-demo}"
+export DATABASE_URL="${DATABASE_URL:-postgres://bench:bench@127.0.0.1:5432/demo}"
+export DB_POOL_SIZE="${DB_POOL_SIZE:-32}"
 
 NAME="${NAME:-go}"
 STACK="${STACK:-Go/Gin/Gorm}"
@@ -25,11 +28,11 @@ case "${1:-start}" in
         command -v go >/dev/null 2>&1 || { echo "go not found" >&2; exit 1; }
         ;;
     build)
-        cd "$HERE" && CGO_ENABLED=1 go build -ldflags="-s -w" -o myapp ./cmd/server
+        cd "$HERE" && CGO_ENABLED=0 go build -ldflags="-s -w" -o myapp ./cmd/server
         ;;
     start)
         cd "$ROOT"
-        DEMO_DB="$DEMO_DB" PORT="$PORT" exec "$HERE/myapp"
+        PORT="$PORT" exec "$HERE/myapp"
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2

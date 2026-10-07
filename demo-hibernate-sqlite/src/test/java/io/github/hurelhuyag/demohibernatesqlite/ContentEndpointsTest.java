@@ -6,15 +6,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.jdbc.Sql;
 import org.springframework.test.web.servlet.MockMvc;
-
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 
 import static org.springframework.test.context.jdbc.Sql.ExecutionPhase.AFTER_TEST_METHOD;
 import static org.springframework.test.json.JsonCompareMode.STRICT;
@@ -23,8 +16,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/// The same 16 cases exist in every demo-*/ project. They run against a copy of the repo's
-/// demo.sqlite (built by db/generate.sql): 100 categories in 3 levels, 100,000 contents.
+/// The same 16 cases exist in every demo-*/ project. They run against the PostgreSQL database named
+/// by the PG* variables (../test.sh hands each run a fresh clone of demo_template, built by
+/// db/generate.sql): 100 categories in 3 levels, 100,000 contents.
 /// STRICT compares the whole document: values, array order, and no missing or extra fields.
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
@@ -32,14 +26,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ContentEndpointsTest {
 
     static final String RESTORE_CONTENT_2 = "update content set content = 'Analysis: NBA #2' where id = 2";
-
-    @DynamicPropertySource
-    static void copyOfDemoDatabase(DynamicPropertyRegistry registry) throws IOException {
-        var copy = Files.createTempFile("demo", ".sqlite");
-        Files.copy(Path.of("../demo.sqlite"), copy, StandardCopyOption.REPLACE_EXISTING);
-        copy.toFile().deleteOnExit();
-        registry.add("spring.datasource.url", () -> "jdbc:sqlite:" + copy);
-    }
 
     @Autowired
     MockMvc mvc;

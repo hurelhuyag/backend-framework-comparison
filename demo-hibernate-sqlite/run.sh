@@ -4,7 +4,16 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
-DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
+# PostgreSQL connection (see ../db/postgres.sh). Explicit PG* win, then DATABASE_URL
+# (postgres://user:pass@host:port/db), then the defaults. application.properties builds the
+# JDBC url and credentials from PG*, and the Hikari pool size from DB_POOL_SIZE.
+DATABASE_URL="${DATABASE_URL:-postgres://bench:bench@127.0.0.1:5432/demo}"
+if [[ "$DATABASE_URL" =~ ^postgres(ql)?://([^:@/]+)(:([^@/]*))?@([^:/]+)(:([0-9]+))?/([^?]+) ]]; then
+    : "${PGUSER:=${BASH_REMATCH[2]}}" "${PGPASSWORD:=${BASH_REMATCH[4]}}"
+    : "${PGHOST:=${BASH_REMATCH[5]}}" "${PGPORT:=${BASH_REMATCH[7]:-5432}}" "${PGDATABASE:=${BASH_REMATCH[8]}}"
+fi
+export DATABASE_URL PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" PGUSER="${PGUSER:-bench}" \
+    PGPASSWORD="${PGPASSWORD:-bench}" PGDATABASE="${PGDATABASE:-demo}" DB_POOL_SIZE="${DB_POOL_SIZE:-32}"
 
 NATIVE="${NATIVE:-0}"
 NAME="${NAME:-java}"
@@ -43,11 +52,11 @@ case "${1:-start}" in
     start)
         cd "$ROOT"
         if [ "$NATIVE" = "1" ]; then
-            exec "$HERE/target/demo-hibernate-sqlite" --server.port="$PORT" --spring.datasource.url="jdbc:sqlite:$DEMO_DB"
+            exec "$HERE/target/demo-hibernate-sqlite" --server.port="$PORT"
         fi
         jar="$(ls -1 "$HERE"/target/*.jar 2>/dev/null | grep -v '\.original$' | head -1)"
         [ -n "$jar" ] || { echo "no jar in $HERE/target - run './run.sh build'" >&2; exit 1; }
-        exec java $JAVA_OPTS -jar "$jar" --server.port="$PORT" --spring.datasource.url="jdbc:sqlite:$DEMO_DB"
+        exec java $JAVA_OPTS -jar "$jar" --server.port="$PORT"
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2

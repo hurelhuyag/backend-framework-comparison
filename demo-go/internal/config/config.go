@@ -10,7 +10,8 @@ import (
 
 type Config struct {
 	Port            string        `env:"PORT" envDefault:"8080"`
-	DBPath          string        `env:"DEMO_DB" envDefault:"demo.sqlite"`
+	DatabaseURL     string        `env:"DATABASE_URL" envDefault:"postgres://bench:bench@127.0.0.1:5432/demo"`
+	DBPoolSize      int           `env:"DB_POOL_SIZE" envDefault:"32"`
 	LogLevel        slog.Level    `env:"LOG_LEVEL" envDefault:"WARN"`
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"10s"`
 }

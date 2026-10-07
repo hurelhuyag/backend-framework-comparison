@@ -7,31 +7,31 @@ use Tests\TestCase;
 
 /**
  * Endpoint tests that pin the CURRENT behaviour of the API against the real dataset.
- * Every test runs on a fresh temp-file copy of the repo-root demo.sqlite (built by db/generate.sql);
- * the original file is never opened by the app.
+ * They run against the PostgreSQL database the PG* variables name (test.sh hands them a fresh clone
+ * of demo_template). The only write (PUT on content 2) is undone after every test.
  */
 class EndpointsTest extends TestCase
 {
-    private string $databaseCopy;
+    private const WRITTEN_ID = 2;
+
+    private ?string $originalContent = null;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $source = dirname(base_path()).'/demo.sqlite';
-        $this->assertFileExists($source, 'mount the repo root so ../demo.sqlite is visible');
-        $this->databaseCopy = tempnam(sys_get_temp_dir(), 'demo-php-test-');
-        copy($source, $this->databaseCopy);
-
-        config(['database.connections.sqlite.database' => $this->databaseCopy]);
-        DB::purge('sqlite');
+        $this->assertSame('pgsql', DB::connection()->getDriverName());
+        $this->originalContent = DB::table('content')->where('id', self::WRITTEN_ID)->value('content');
+        $this->assertNotNull($this->originalContent, 'content '.self::WRITTEN_ID.' missing: is PGDATABASE a clone of demo_template?');
     }
 
     protected function tearDown(): void
     {
-        DB::disconnect('sqlite');
+        if ($this->originalContent !== null) {
+            DB::table('content')->where('id', self::WRITTEN_ID)->update(['content' => $this->originalContent]);
+        }
+        DB::disconnect();
         parent::tearDown();
-        @unlink($this->databaseCopy);
     }
 
     public function test_list_default(): void

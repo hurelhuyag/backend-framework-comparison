@@ -3,7 +3,7 @@ using Xunit;
 namespace DemoDotnet.Tests;
 
 // The same 16 cases exist in every demo of this repo, so two demos can be read side by side.
-// Each test runs against a fresh copy of the repo-root demo.sqlite (see ApiFactory.ResetData).
+// Each test runs against the PostgreSQL database from the environment, with content 2 restored first (see ApiFactory.ResetData).
 // Every nested category carries its parent chain all the way up to the root.
 [Collection(ApiCollection.Name)]
 public sealed class ApiTests(ApiFactory factory) : ApiTestBase(factory)

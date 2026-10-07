@@ -1,58 +1,39 @@
 using System.Text.Json.Nodes;
+using DemoDotnet.Data;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Data.Sqlite;
+using Npgsql;
 using Xunit;
 
 namespace DemoDotnet.Tests;
 
-// Boots the real app (Program.cs) in-process against a throwaway COPY of the repo-root demo.sqlite.
-// The app reads DEMO_DB once while building the host, so the copy's path is fixed up front and
-// ResetData() overwrites that copy from the original before every test. The original is only read.
+// Boots the real app (Program.cs) in-process against the PostgreSQL database given by the environment
+// (DATABASE_URL / PG*; test.sh hands it a fresh clone of demo_template). The only write any test makes
+// is UpdateContent on content 2, so ResetData() restores that row before every test and on dispose.
 public sealed class ApiFactory : WebApplicationFactory<Program>
 {
-    private readonly string _dir;
-    private readonly string _sourceDb;
+    // Content 2's text in demo_template (db/generate.sql).
+    private const string OriginalContent2 = "Analysis: NBA #2";
 
-    public string DbPath { get; }
+    private readonly string _connectionString = DatabaseSettings.ConnectionString();
 
     public ApiFactory()
     {
-        _sourceDb = FindRepoDemoDb();
-        _dir = Path.Combine(Path.GetTempPath(), "demo-dotnet-tests-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_dir);
-        DbPath = Path.Combine(_dir, "demo.sqlite");
-        Environment.SetEnvironmentVariable("DEMO_DB", DbPath);
         ResetData();
     }
 
-    // Fresh copy of the real dataset. Tests run one at a time, so no request holds a connection here;
-    // clearing the pool closes the app's idle connections to the previous copy first.
     public void ResetData()
     {
-        SqliteConnection.ClearAllPools();
-        File.Copy(_sourceDb, DbPath, overwrite: true);
-    }
-
-    // The repo-root demo.sqlite: walk up from the test binaries to the directory that holds both
-    // demo-dotnet/ and demo.sqlite (a stray demo-dotnet/demo.sqlite from a local run is not picked).
-    private static string FindRepoDemoDb()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            var candidate = Path.Combine(dir.FullName, "demo.sqlite");
-            if (File.Exists(candidate) && Directory.Exists(Path.Combine(dir.FullName, "demo-dotnet")))
-            {
-                return candidate;
-            }
-        }
-        throw new FileNotFoundException("demo.sqlite not found above " + AppContext.BaseDirectory);
+        using var connection = new NpgsqlConnection(_connectionString);
+        connection.Open();
+        using var command = new NpgsqlCommand("UPDATE content SET content = @text WHERE id = 2", connection);
+        command.Parameters.AddWithValue("text", OriginalContent2);
+        command.ExecuteNonQuery();
     }
 
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
-        SqliteConnection.ClearAllPools();
-        try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+        try { ResetData(); } catch (NpgsqlException) { }
     }
 }
 
@@ -62,8 +43,8 @@ public sealed class ApiCollection : ICollectionFixture<ApiFactory>
     public const string Name = "api";
 }
 
-// Each test gets a fresh class instance; resetting in the constructor gives every test a pristine
-// copy of the dataset, so the update test cannot leak into the others.
+// Each test gets a fresh class instance; resetting in the constructor restores the one row the update
+// test writes, so it cannot leak into the others.
 public abstract class ApiTestBase
 {
     protected ApiFactory Factory { get; }

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Python / Django / Gunicorn. Deps go into a local .venv; gunicorn is added on top of
 # requirements.txt (which does not list it). WORKERS tunes the gunicorn worker count.
+# The database is PostgreSQL, read from the libpq PG* variables (settings.py). Each sync worker
+# keeps one persistent connection (CONN_MAX_AGE = None), so DB_POOL_SIZE does not apply here.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(dirname "$HERE")"
 
 NAME="${NAME:-python}"
 STACK="${STACK:-Python/Django/Gunicorn}"
@@ -15,7 +16,10 @@ ITEM_PATH="${ITEM_PATH-}"
 [ -n "$ITEM_PATH" ] || ITEM_PATH='/contents/{id}/'
 CATEGORIES_PATH="${CATEGORIES_PATH-}"
 [ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/categories/'
-DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
+export DATABASE_URL="${DATABASE_URL:-postgres://bench:bench@127.0.0.1:5432/demo}"
+export PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" PGUSER="${PGUSER:-bench}"
+export PGPASSWORD="${PGPASSWORD:-bench}" PGDATABASE="${PGDATABASE:-demo}"
+export DB_POOL_SIZE="${DB_POOL_SIZE:-32}"
 WORKERS="${WORKERS:-4}"
 VENV="${VENV:-$HERE/.venv}"
 
@@ -32,12 +36,10 @@ case "${1:-start}" in
         [ -d "$VENV" ] || python3 -m venv "$VENV"
         "$VENV/bin/pip" install -q --upgrade pip
         "$VENV/bin/pip" install -q -r requirements.txt gunicorn
-        # settings.py points at BASE_DIR/demo.sqlite; link it to the shared db.
-        [ -e "$HERE/demo.sqlite" ] || ln -s "$DEMO_DB" "$HERE/demo.sqlite"
         ;;
     start)
         cd "$HERE"
-        DEMO_DB="$DEMO_DB" exec "$VENV/bin/gunicorn" mysite.wsgi:application \
+        exec "$VENV/bin/gunicorn" mysite.wsgi:application \
             --bind "0.0.0.0:$PORT" \
             --workers "$WORKERS" \
             --log-level error

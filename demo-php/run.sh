@@ -24,7 +24,14 @@ ITEM_PATH="${ITEM_PATH-}"
 [ -n "$ITEM_PATH" ] || ITEM_PATH='/api/contents/{id}'
 CATEGORIES_PATH="${CATEGORIES_PATH-}"
 [ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/api/categories'
-DEMO_DB="${DEMO_DB:-$ROOT/demo.sqlite}"
+# PostgreSQL connection (shared contract with the harness). Laravel's pgsql connection reads the
+# PG* variables (config/database.php); DATABASE_URL and DB_POOL_SIZE are exported for parity only
+# (php-fpm keeps one persistent PDO connection per worker instead of a pool).
+export DATABASE_URL="${DATABASE_URL:-postgres://bench:bench@127.0.0.1:5432/demo}"
+export PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" PGUSER="${PGUSER:-bench}"
+export PGPASSWORD="${PGPASSWORD:-bench}" PGDATABASE="${PGDATABASE:-demo}"
+export DB_POOL_SIZE="${DB_POOL_SIZE:-32}"
+export DB_CONNECTION=pgsql
 
 case "${1:-start}" in
     meta)
@@ -45,13 +52,15 @@ case "${1:-start}" in
         cd "$HERE"
         composer install --no-interaction --no-dev --optimize-autoloader
         [ -f .env ] || cp .env.example .env
-        php artisan config:cache
         ;;
     start)
         if [ "$PHP_SERVER" = "fpm" ]; then
             # Nginx + PHP-FPM (what the Docker image uses).
             # nginx.conf has a literal `listen`; point it at $PORT.
             sed -i "s/^\( *listen \)[0-9]*/\1$PORT/" /etc/nginx/nginx.conf 2>/dev/null || true
+            # The config cache freezes env() values, so build it here, from the PG* this container
+            # was started with, not at image build time.
+            (cd "$HERE" && php artisan config:cache >/dev/null)
             php-fpm -D
             exec nginx -g 'daemon off;'
         fi
@@ -61,7 +70,7 @@ case "${1:-start}" in
             exec sleep infinity
         fi
         cd "$HERE"
-        exec env DB_DATABASE="$DEMO_DB" php artisan serve --host=0.0.0.0 --port="$PORT"
+        exec php artisan serve --host=0.0.0.0 --port="$PORT"
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2
