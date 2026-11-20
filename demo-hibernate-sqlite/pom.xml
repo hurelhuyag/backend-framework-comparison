@@ -31,6 +31,10 @@
         <!-- Boot 4.1.1 manages lombok 1.18.46, which cannot hook javac on JDK 27
              (ExceptionInInitializerError in com.sun.tools.javac.tree.EndPosTable). -->
         <lombok.version>1.18.48</lombok.version>
+        <!-- Not on Maven Central: the Dockerfile builds this release from source. -->
+        <ffm-sqlite.version>0.2.7</ffm-sqlite.version>
+        <!-- FFM downcalls are restricted methods; without this the JVM warns on the first one. -->
+        <argLine>--enable-native-access=ALL-UNNAMED</argLine>
     </properties>
     <dependencies>
         <dependency>
@@ -59,10 +63,6 @@
         <dependency>
             <groupId>org.hibernate.orm</groupId>
             <artifactId>hibernate-community-dialects</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.xerial</groupId>
-            <artifactId>sqlite-jdbc</artifactId>
         </dependency>
 
         <dependency>
@@ -185,5 +185,57 @@
             </plugin>
         </plugins>
     </build>
+
+    <!-- The SQLite driver. jdbc.scheme and jdbc.driver are filtered into application.properties.
+         ffm-sqlite-jdbc (FFM, system libsqlite3) is the default. xerial's sqlite-jdbc (JNI, bundled
+         SQLite) stays for -Pnative, because ffm-sqlite ships no native-image metadata, and as
+         -Pxerial for comparing the two drivers on the JVM. Activating either profile turns the
+         default one off. -->
+    <profiles>
+        <profile>
+            <id>ffm-sqlite</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <properties>
+                <jdbc.scheme>jdbc:ffmsqlite:</jdbc.scheme>
+                <jdbc.driver>io.github.revsnai.ffmsqlite.jdbc.FfmSqliteDriver</jdbc.driver>
+            </properties>
+            <dependencies>
+                <dependency>
+                    <groupId>io.github.revsnai</groupId>
+                    <artifactId>ffm-sqlite-jdbc</artifactId>
+                    <version>${ffm-sqlite.version}</version>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>xerial</id>
+            <properties>
+                <jdbc.scheme>jdbc:sqlite:</jdbc.scheme>
+                <jdbc.driver>org.sqlite.JDBC</jdbc.driver>
+            </properties>
+            <dependencies>
+                <dependency>
+                    <groupId>org.xerial</groupId>
+                    <artifactId>sqlite-jdbc</artifactId>
+                </dependency>
+            </dependencies>
+        </profile>
+        <!-- Merged with spring-boot-starter-parent's native profile of the same id. -->
+        <profile>
+            <id>native</id>
+            <properties>
+                <jdbc.scheme>jdbc:sqlite:</jdbc.scheme>
+                <jdbc.driver>org.sqlite.JDBC</jdbc.driver>
+            </properties>
+            <dependencies>
+                <dependency>
+                    <groupId>org.xerial</groupId>
+                    <artifactId>sqlite-jdbc</artifactId>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 
 </project>

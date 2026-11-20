@@ -38,7 +38,7 @@ class ContentEndpointsTest {
         var copy = Files.createTempFile("demo", ".sqlite");
         Files.copy(Path.of("../demo.sqlite"), copy, StandardCopyOption.REPLACE_EXISTING);
         copy.toFile().deleteOnExit();
-        registry.add("spring.datasource.url", () -> "jdbc:sqlite:" + copy);
+        registry.add("demo.db", copy::toString);
     }
 
     @Autowired
@@ -379,9 +379,12 @@ class ContentEndpointsTest {
                     {"content": "updated text"}
                     """))
             .andExpect(status().isOk())
-            // The update does not load the category, so the response has "category": null.
+            // The update re-reads the row with findDetail, so the response carries the category chain.
             .andExpect(content().json("""
-                {"id": 2, "content": "updated text", "category": null}
+                {"id": 2, "content": "updated text",
+                  "category": {"id": 321, "name": "NBA", "parent":
+                    {"id": 32, "name": "Basketball", "parent":
+                      {"id": 3, "name": "Sports", "parent": null}}}}
                 """, STRICT));
 
         mvc.perform(get("/contents/2"))

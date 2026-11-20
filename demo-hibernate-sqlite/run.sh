@@ -24,6 +24,8 @@ NOTES="${NOTES-}"
 [ -n "$NOTES" ] || NOTES='only demo with a real txn boundary; 1 query/read; needs ~30k req to warm'
 [ -n "$CATEGORIES_PATH" ] || CATEGORIES_PATH='/categories'
 JAVA_OPTS="${JAVA_OPTS:-}"
+# Empty builds the default driver (ffm-sqlite-jdbc); -Pxerial builds sqlite-jdbc instead.
+MVN_PROFILE="${MVN_PROFILE:-}"
 
 case "${1:-start}" in
     meta)
@@ -40,17 +42,17 @@ case "${1:-start}" in
         if [ "$NATIVE" = "1" ]; then
             mvn -B -DskipTests -Pnative clean compile package native:compile
         else
-            mvn -B -DskipTests clean package
+            mvn -B -DskipTests $MVN_PROFILE clean package
         fi
         ;;
     start)
         cd "$ROOT"
         if [ "$NATIVE" = "1" ]; then
-            exec "$HERE/target/demo-hibernate-sqlite" --server.port="$PORT" --spring.datasource.url="jdbc:sqlite:$DEMO_DB"
+            exec "$HERE/target/demo-hibernate-sqlite" --server.port="$PORT" --demo.db="$DEMO_DB"
         fi
         jar="$(ls -1 "$HERE"/target/*.jar 2>/dev/null | grep -v '\.original$' | head -1)"
         [ -n "$jar" ] || { echo "no jar in $HERE/target - run './run.sh build'" >&2; exit 1; }
-        exec java $JAVA_OPTS -jar "$jar" --server.port="$PORT" --spring.datasource.url="jdbc:sqlite:$DEMO_DB"
+        exec java --enable-native-access=ALL-UNNAMED $JAVA_OPTS -jar "$jar" --server.port="$PORT" --demo.db="$DEMO_DB"
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2

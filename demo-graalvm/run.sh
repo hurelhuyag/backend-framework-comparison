@@ -34,14 +34,14 @@ case "${1:-start}" in
         command -v mvn >/dev/null 2>&1 || { echo "mvn not found" >&2; exit 1; }
         ;;
     build)
-        # -Pnative comes from spring-boot-starter-parent; this pom defines no profiles itself.
+        # -Pnative comes from spring-boot-starter-parent; the pom adds xerial's driver to it.
         cd "$SRC"
         mvn -B -DskipTests -Djava.version=25 -Pnative clean package native:compile
         cp "$SRC/target/demo-hibernate-sqlite" "$APP"
         ;;
     start)
         cd "$ROOT"
-        exec "$APP" --server.port="$PORT" --spring.datasource.url="jdbc:sqlite:$DEMO_DB"
+        exec "$APP" --server.port="$PORT" --demo.db="$DEMO_DB"
         ;;
     *)
         echo "usage: $0 {meta|check|build|start}" >&2; exit 2
